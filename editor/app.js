@@ -68,6 +68,10 @@ orbit.enableDamping = true; orbit.dampingFactor = 0.12;
 orbit.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
 orbit.maxPolarAngle = Math.PI * 0.495;
 orbit.target.set(0, 0, 0);
+// editor preferences (per browser, not part of the world file)
+const prefs = Object.assign({ orbitSpeed: 1, lookSpeed: 1 }, JSON.parse(localStorage.getItem('ns-editor-prefs') || '{}'));
+function applyPrefs() { orbit.rotateSpeed = prefs.orbitSpeed; orbit.panSpeed = Math.max(0.5, prefs.orbitSpeed); localStorage.setItem('ns-editor-prefs', JSON.stringify(prefs)); }
+applyPrefs();
 
 const gizmo = new TransformControls(editCam, renderer.domElement);
 gizmo.setSize(0.8);
@@ -607,6 +611,11 @@ function renderPanel() {
   }
   sec.appendChild(el('div', { class: 'note', text: 'Worlds autosave to this browser every 30 s. EXPORT downloads a .json you can keep or send; IMPORT loads one.' }));
   root.appendChild(sec);
+  const pref = el('div', { class: 'sec' }, [el('h3', { text: 'EDITOR' })]);
+  pref.appendChild(range('Orbit sensitivity', prefs.orbitSpeed, 0.2, 3, 0.1, (v) => { prefs.orbitSpeed = v; applyPrefs(); }, (v) => v.toFixed(1) + '×'));
+  pref.appendChild(range('Look sensitivity (play)', prefs.lookSpeed, 0.2, 3, 0.1, (v) => { prefs.lookSpeed = v; applyPrefs(); }, (v) => v.toFixed(1) + '×'));
+  pref.appendChild(el('div', { class: 'note', text: 'Right-drag orbit speed in the editor, and mouse-look speed in play mode. Saved in this browser.' }));
+  root.appendChild(pref);
 }
 function renderMultiPanel(root) {
   const objs = selectedObjects();
@@ -733,6 +742,7 @@ function updateHint() {
 //  PLAY MODE — the guard
 // =====================================================================
 const plc = new PointerLockControls(playCam, renderer.domElement);
+Object.defineProperty(plc, 'pointerSpeed', { get: () => prefs.lookSpeed, set: () => {} });   // play-mode look speed follows the EDITOR preference
 const player = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), radius: 0.38, height: 1.62, feet: 0, bob: 0, inventory: [] };
 const flashPivot = new THREE.Group(); playCam.add(flashPivot);
 const flashlight = new THREE.SpotLight(0xfff3d9, 0, 38, 0.58, 0.75, 1.7);

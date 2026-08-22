@@ -55,7 +55,7 @@ Everything lives in `main.js`:
 
 Open http://localhost:8765/editor/ (same static server). Build a space, drop the guard in, iterate.
 
-- **Camera**: right-drag orbit · middle-drag pan · wheel zoom · WASD + E/C fly · F frames the selection.
+- **Camera**: right-drag orbit · middle-drag pan · wheel zoom · WASD + E/C fly · F frames the selection. The EDITOR section at the bottom of the right panel has **Orbit sensitivity** (right-drag) and **Look sensitivity** (play-mode mouse look) sliders, saved per browser.
 - **Tools** (left bar): Select (Q) · Terrain (T) raise/lower/smooth/flatten brush, `[`/`]` resize · Path (H) click points, double-click/Enter to finish — a road ribbon that follows the terrain · Box / Wall / Ramp / Cylinder / Sphere / Door / Light / Tree · Tree brush (drag to scatter) · Spawn (S) click to place the guard's start.
 - **Selection**: gizmo modes 1 move / 2 rotate (yaw ring only) / 3 scale · hold Shift while dragging to snap (0.5 m / 15° / 0.25×) · Delete · Ctrl+D duplicate · Ctrl+Z undo. The right panel edits size, colour, solid, "snap to ground", and interactions: pick up (inventory; a door whose *Key name* matches unlocks with it), light switch (toggles lights in a *group*), or show a message. Doors can be bars or solid, locked or not.
 - **Rotating**: R / Shift+R turn the selection ±15°, `,` / `.` turn it ±90°; the panel has the same four buttons plus a degrees box. The same keys spin the translucent preview while a place tool is active, so you can line a wall up before you click.
