@@ -71,8 +71,16 @@ orbit.target.set(0, 0, 0);
 const gizmo = new TransformControls(editCam, renderer.domElement);
 gizmo.setSize(0.8);
 scene.add(gizmo.getHelper());
-gizmo.addEventListener('dragging-changed', (e) => { orbit.enabled = !e.value; if (!e.value && selected) { world.pullTransform(selected); refreshSelectionBox(); pushUndo(); renderPanel(); } });
-gizmo.addEventListener('objectChange', () => { if (selected) { world.pullTransform(selected); refreshSelectionBox(); } });
+// dragging the Y arrow (or a plane that includes Y) lifts a grounded object off the ground
+const gizmoLifting = () => gizmo.mode === 'translate' && /Y/.test(gizmo.axis || '') && gizmo.axis !== 'XYZ';
+gizmo.addEventListener('dragging-changed', (e) => { orbit.enabled = !e.value; if (!e.value && selected) { world.pullTransform(selected, gizmoLifting(), true); gizmo.attach(world.meshes.get(selected.id)); refreshSelectionBox(); pushUndo(); renderPanel(); } });
+gizmo.addEventListener('objectChange', () => { if (selected) { world.pullTransform(selected, gizmoLifting()); refreshSelectionBox(); } });
+function setGizmoMode(mode) {
+  gizmo.setMode(mode);
+  // only yaw is stored, so hide the X/Z rotation rings — they were easy to grab by mistake and did nothing useful
+  gizmo.showX = gizmo.showZ = mode !== 'rotate';
+}
+function setGizmoSnap(on) { gizmo.setRotationSnap(on ? THREE.MathUtils.degToRad(15) : null); gizmo.setTranslationSnap(on ? 0.5 : null); gizmo.setScaleSnap(on ? 0.25 : null); }
 
 const selBox = new THREE.BoxHelper(new THREE.Object3D(), 0xffd25a); selBox.visible = false; scene.add(selBox);
 const brushRing = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 48), new THREE.MeshBasicMaterial({ color: 0xffd25a, side: THREE.DoubleSide, transparent: true, opacity: 0.8, depthTest: false }));
@@ -80,12 +88,40 @@ brushRing.rotation.x = -Math.PI / 2; brushRing.visible = false; brushRing.render
 const pathPreview = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd25a, depthTest: false })); pathPreview.renderOrder = 10; scene.add(pathPreview);
 const ghost = new THREE.Group(); scene.add(ghost);   // translucent preview of the thing about to be placed
 
+// map border + four edge handles you can drag to grow/shrink the terrain (the map stays centred on the origin)
+const mapEdge = new THREE.Group(); scene.add(mapEdge);
+const edgeLine = new THREE.LineLoop(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd25a, transparent: true, opacity: 0.7 })); mapEdge.add(edgeLine);
+const edgeHandles = [];
+for (const [ax, sign] of [['x', 1], ['x', -1], ['z', 1], ['z', -1]]) {
+  const h = new THREE.Mesh(new THREE.BoxGeometry(1, 0.35, 1), new THREE.MeshBasicMaterial({ color: 0xffd25a, transparent: true, opacity: 0.85 }));
+  h.userData.edge = { ax, sign }; mapEdge.add(h); edgeHandles.push(h);
+}
+function updateMapEdge(size = world.data.terrain.size) {
+  const half = size / 2, pts = [], n = 24;
+  const hAt = (x, z) => world.sampleHeight(x, z) + 0.3;
+  for (let i = 0; i < n; i++) pts.push(new THREE.Vector3(-half + (i / n) * size, 0, -half));
+  for (let i = 0; i < n; i++) pts.push(new THREE.Vector3(half, 0, -half + (i / n) * size));
+  for (let i = 0; i < n; i++) pts.push(new THREE.Vector3(half - (i / n) * size, 0, half));
+  for (let i = 0; i < n; i++) pts.push(new THREE.Vector3(-half, 0, half - (i / n) * size));
+  for (const p of pts) p.y = hAt(p.x, p.z);
+  edgeLine.geometry.dispose(); edgeLine.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+  const s = clamp(size * 0.02, 1.5, 14);
+  for (const h of edgeHandles) {
+    const { ax, sign } = h.userData.edge;
+    const x = ax === 'x' ? sign * half : 0, z = ax === 'z' ? sign * half : 0;
+    h.position.set(x, hAt(x, z), z); h.scale.set(ax === 'x' ? s * 0.5 : s * 2, 1, ax === 'z' ? s * 0.5 : s * 2);
+  }
+}
+function hitEdgeHandle(e) { if (!mapEdge.visible) return null; pointerRay(e); mapEdge.updateMatrixWorld(true); return raycaster.intersectObjects(edgeHandles)[0]?.object || null; }
+
 // =====================================================================
 //  EDITOR STATE
 // =====================================================================
 const ed = {
   tool: 'select', selectedId: null, brush: { radius: 8, strength: 0.35, mode: 'raise' }, treeBrush: { radius: 8, density: 0.5 },
   pathPoints: [], down: false, flattenTarget: 0, lastBrushAt: null, undo: [], redo: [], mode: 'edit',
+  placeRot: 0,   // extra yaw applied to the placement ghost (R / Shift+R / , / . while a place tool is active)
+  edgeDrag: null,   // { ax, size } while a map-edge handle is being dragged
 };
 let selected = null;
 const raycaster = new THREE.Raycaster();
@@ -94,7 +130,7 @@ const ndc = new THREE.Vector2();
 function setTool(tool) {
   ed.tool = tool;
   if (tool !== 'select') select(null);
-  ed.pathPoints = []; updatePathPreview();
+  ed.pathPoints = []; updatePathPreview(); ed.placeRot = 0;
   document.querySelectorAll('#tools button').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
   brushRing.visible = tool === 'terrain' || tool === 'treebrush';
   buildGhost();
@@ -138,6 +174,9 @@ function buildGhost() {
   g.position.y = o.grounded ? (o.offset || 0) : 0;
   ghost.add(g);
 }
+// doors and walls start square to the view; everything else starts at 0. placeRot is added on top.
+const placeBaseRot = () => (ed.tool === 'door' || ed.tool === 'wall') ? Math.round(orbit.getAzimuthalAngle() / (Math.PI / 2)) * (Math.PI / 2) : 0;
+const placeRot = () => placeBaseRot() + ed.placeRot;
 
 // =====================================================================
 //  INPUT (editor)
@@ -146,6 +185,8 @@ const canvas = renderer.domElement;
 canvas.addEventListener('pointerdown', (e) => {
   if (ed.mode !== 'edit' || e.button !== 0) return;
   if (gizmo.axis) return;                       // clicking the gizmo
+  const handle = hitEdgeHandle(e);              // map-edge handles win over everything (any tool)
+  if (handle) { ed.down = true; ed.edgeDrag = { ax: handle.userData.edge.ax, size: world.data.terrain.size }; select(null); return; }
   const hit = hitWorld(e, ed.tool === 'select' || ed.tool === 'spawn' || isPlaceTool());
   ed.down = true;
   switch (ed.tool) {
@@ -184,12 +225,23 @@ canvas.addEventListener('pointerdown', (e) => {
 });
 canvas.addEventListener('pointermove', (e) => {
   if (ed.mode !== 'edit') return;
+  if (ed.edgeDrag) {
+    // pull the edge: the map stays centred, so the new size is twice the cursor's distance from the middle
+    pointerRay(e);
+    const p = new THREE.Vector3();
+    if (raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), p)) {
+      ed.edgeDrag.size = Math.round(clamp(Math.abs(p[ed.edgeDrag.ax]) * 2, 40, 2000) / 10) * 10;
+      updateMapEdge(ed.edgeDrag.size); $('hint').textContent = `Map size: ${ed.edgeDrag.size} × ${ed.edgeDrag.size} m — release to apply`;
+    }
+    return;
+  }
+  if (!ed.down) { const h = hitEdgeHandle(e); canvas.style.cursor = h ? (h.userData.edge.ax === 'x' ? 'ew-resize' : 'ns-resize') : ''; }
   if (ed.tool === 'terrain' || ed.tool === 'treebrush' || isPlaceTool() || ed.tool === 'spawn') {
     const hit = hitWorld(e, isPlaceTool());
     if (hit) {
       brushRing.position.set(hit.point.x, hit.point.y + 0.1, hit.point.z);
       const r = ed.tool === 'terrain' ? ed.brush.radius : ed.treeBrush.radius; brushRing.scale.set(r, r, r);
-      ghost.position.copy(hit.point); ghost.visible = true;
+      ghost.position.copy(hit.point); ghost.rotation.y = placeRot(); ghost.visible = true;
       if (ed.down && ed.tool === 'terrain') sculptAt(hit.point);
       if (ed.down && ed.tool === 'treebrush') scatterTrees(hit.point);
     } else ghost.visible = false;
@@ -198,7 +250,13 @@ canvas.addEventListener('pointermove', (e) => {
 window.addEventListener('pointerup', () => {
   if (!ed.down) return;
   ed.down = false;
-  if (ed.mode === 'edit' && (ed.tool === 'terrain')) { world.groundAll(); refreshSelectionBox(); pushUndo(); }
+  if (ed.edgeDrag) {
+    const size = ed.edgeDrag.size; ed.edgeDrag = null;
+    if (size !== world.data.terrain.size) { pushUndo(); world.resizeTerrain(size); toast(`Map is now ${size} × ${size} m`); }
+    updateMapEdge(); refreshSelectionBox(); renderPanel(); updateHint();
+    return;
+  }
+  if (ed.mode === 'edit' && (ed.tool === 'terrain')) { world.groundAll(); refreshSelectionBox(); updateMapEdge(); pushUndo(); }
   if (ed.mode === 'edit' && ed.tool === 'treebrush') pushUndo();
 });
 canvas.addEventListener('dblclick', () => { if (ed.mode === 'edit' && ed.tool === 'path') finishPath(); });
@@ -212,7 +270,7 @@ function placeObject(type, hit) {
   if (hit.terrain) def.grounded = true; else def.grounded = false;
   if (type === 'light') { def.grounded = hit.terrain; def.pos[1] = hit.point.y + (hit.terrain ? DEFAULTS.light.offset : 0.3); }
   if (type === 'tree') def.scale = [0.8 + Math.random() * 0.8, 0.8 + Math.random() * 0.8, 0.8 + Math.random() * 0.8];
-  if (type === 'door' || type === 'wall') def.rot = Math.round(orbit.getAzimuthalAngle() / (Math.PI / 2)) * (Math.PI / 2);   // square to the view
+  def.rot = placeRot();   // doors/walls square to the view, plus whatever you dialled in with R / , / .
   const o = world.addObject(def);
   if (o.grounded) { o.pos[1] = world.sampleHeight(o.pos[0], o.pos[2]) + (o.offset || 0); world.syncTransform(o); }
   ed.tool = 'select'; setTool('select'); select(o);
@@ -257,6 +315,7 @@ window.addEventListener('keydown', (e) => {
   keys[e.code] = true;
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (ed.mode === 'play') { onPlayKey(e); return; }
+  if (e.key === 'Shift') setGizmoSnap(true);
   if (e.ctrlKey || e.metaKey) {
     if (e.code === 'KeyZ') { e.preventDefault(); undo(); }
     if (e.code === 'KeyS') { e.preventDefault(); saveLocal(); }
@@ -267,9 +326,14 @@ window.addEventListener('keydown', (e) => {
     case 'KeyQ': setTool('select'); break;
     case 'KeyT': setTool('terrain'); break;
     case 'KeyH': setTool('path'); break;
-    case 'Digit1': gizmo.setMode('translate'); break;
-    case 'Digit2': gizmo.setMode('rotate'); break;
-    case 'Digit3': gizmo.setMode('scale'); break;
+    case 'Digit1': setGizmoMode('translate'); break;
+    case 'Digit2': setGizmoMode('rotate'); break;
+    case 'Digit3': setGizmoMode('scale'); break;
+    case 'KeyR': rotateBy(e.shiftKey ? -15 : 15); break;
+    case 'Comma': rotateBy(-90); break;
+    case 'Period': rotateBy(90); break;
+    case 'PageUp': e.preventDefault(); liftBy(e.shiftKey ? 1 : 0.25); break;
+    case 'PageDown': e.preventDefault(); liftBy(e.shiftKey ? -1 : -0.25); break;
     case 'Delete': case 'Backspace': if (selected) deleteSelected(); break;
     case 'Escape': if (ed.tool === 'path' && ed.pathPoints.length) { ed.pathPoints = []; updatePathPreview(); } else { select(null); setTool('select'); } break;
     case 'Enter': if (ed.tool === 'path') finishPath(); break;
@@ -279,7 +343,21 @@ window.addEventListener('keydown', (e) => {
     case 'BracketRight': adjustBrush(1); break;
   }
 });
-window.addEventListener('keyup', (e) => { keys[e.code] = false; if (ed.mode === 'play' && e.code === 'KeyQ') aim.active = false; });
+window.addEventListener('keyup', (e) => { keys[e.code] = false; if (e.key === 'Shift') setGizmoSnap(false); if (ed.mode === 'play' && e.code === 'KeyQ') aim.active = false; });
+// rotate the selection (or the placement ghost) by some degrees
+function rotateBy(deg) {
+  const rad = THREE.MathUtils.degToRad(deg);
+  if (selected && selected.type !== 'path') { pushUndo(); selected.rot = (selected.rot || 0) + rad; world.syncTransform(selected); refreshSelectionBox(); renderPanel(); }
+  else if (isPlaceTool()) { ed.placeRot += rad; ghost.rotation.y = placeRot(); toast(`Rotation ${Math.round(THREE.MathUtils.radToDeg(placeRot()))}°`); }
+}
+// nudge the selection up/down; any lift takes it off the ground (pole lights just change pole height)
+function liftBy(m) {
+  if (!selected || selected.type === 'path') return;
+  pushUndo();
+  if (selected.type === 'light' && selected.grounded) { selected.offset = Math.max(0, (selected.offset || 0) + m); selected.pos[1] = world.sampleHeight(selected.pos[0], selected.pos[2]) + selected.offset; world.rebuildObject(selected.id); gizmo.attach(world.meshes.get(selected.id)); }
+  else { selected.grounded = false; selected.pos[1] += m; world.syncTransform(selected); }
+  refreshSelectionBox(); renderPanel();
+}
 function adjustBrush(d) { const b = ed.tool === 'treebrush' ? ed.treeBrush : ed.brush; b.radius = clamp(b.radius + d * 1.5, 1, 60); renderPanel(); }
 function focusOn(p) { const off = editCam.position.clone().sub(orbit.target); orbit.target.copy(p); editCam.position.copy(p).add(off.setLength(Math.min(off.length(), 25))); }
 function deleteSelected() { pushUndo(); world.removeObject(selected.id); select(null); }
@@ -310,7 +388,7 @@ function pushUndo() { ed.undo.push(JSON.stringify(world.serialize())); if (ed.un
 function undo() {
   const s = ed.undo.pop(); if (!s) { toast('Nothing to undo'); return; }
   const id = ed.selectedId; select(null);
-  world.load(JSON.parse(s)); applySettings();
+  world.load(JSON.parse(s)); applySettings(); updateMapEdge();
   const o = world.getObject(id); if (o) select(o);
   toast('Undo');
 }
@@ -321,7 +399,7 @@ function exportWorld() {
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${world.data.name.replace(/[^a-z0-9_-]+/gi, '_') || 'world'}.json`; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
-function loadWorld(data) { select(null); ed.undo = []; world.load(data); $('worldName').value = world.data.name || ''; applySettings(); renderPanel(); }
+function loadWorld(data) { select(null); ed.undo = []; world.load(data); $('worldName').value = world.data.name || ''; applySettings(); updateMapEdge(); renderPanel(); }
 function applySettings() { const s = world.data.settings; applyTime(s.time); scene.fog.density = s.fog; }
 $('btnNew').addEventListener('click', () => { if (confirm('Start a new blank world? (unsaved changes are lost)')) loadWorld(emptyWorld()); });
 $('btnStarter').addEventListener('click', () => { if (confirm('Load the sample world? (unsaved changes are lost)')) loadWorld(starterWorld()); });
@@ -390,6 +468,15 @@ function renderPanel() {
   const sec = el('div', { class: 'sec' }, [el('h3', { text: 'WORLD' })]);
   sec.appendChild(range('Time of day', s.time, 0, 1, 0.01, (v) => { s.time = v; applyTime(v); }, (v) => v < 0.15 ? 'night' : v < 0.5 ? 'dusk' : 'day'));
   sec.appendChild(range('Fog', s.fog, 0, 0.03, 0.0005, (v) => { s.fog = v; scene.fog.density = v; }, (v) => v.toFixed(4)));
+  {
+    const cur = world.data.terrain.size;
+    const sizes = [100, 200, 300, 400, 600, 800, 1000, 1500];
+    if (!sizes.includes(cur)) sizes.push(cur), sizes.sort((a, b) => a - b);
+    const sel = el('select', { onchange: (e) => { const v = parseInt(e.target.value, 10); pushUndo(); world.resizeTerrain(v); updateMapEdge(); if (selected) { gizmo.attach(world.meshes.get(selected.id)); refreshSelectionBox(); } toast(`Map is now ${v} × ${v} m`); renderPanel(); } });
+    for (const v of sizes) sel.appendChild(el('option', { value: v, text: `${v} × ${v} m`, ...(v === cur ? { selected: '' } : {}) }));
+    sec.appendChild(field('Map size', sel));
+    sec.appendChild(el('div', { class: 'note', text: 'Growing keeps your terrain and extends the edges; shrinking clips whatever is outside. Objects stay where they are.' }));
+  }
   sec.appendChild(el('div', { class: 'note', text: 'Worlds autosave to this browser every 30 s. EXPORT downloads a .json you can keep or send; IMPORT loads one.' }));
   root.appendChild(sec);
 }
@@ -401,11 +488,13 @@ function renderObjectPanel(root, o) {
     const pos = el('div', { class: 'row3' }, [0, 1, 2].map(i => numInput(o.pos[i], (v) => { o.pos[i] = v; if (i === 1) o.grounded = false; apply(); })));
     root.appendChild(field('Position', pos));
     root.appendChild(field('Rotation °', numInput(THREE.MathUtils.radToDeg(o.rot || 0), (v) => { o.rot = THREE.MathUtils.degToRad(v); apply(); }, 5)));
+    root.appendChild(field('', el('div', { class: 'row2', style: 'grid-template-columns:1fr 1fr 1fr 1fr' }, [[-90, '↺ 90'], [-15, '↺ 15'], [15, '↻ 15'], [90, '↻ 90']].map(([d, t]) => el('button', { text: t, title: `Rotate ${d}°`, onclick: () => rotateBy(d) })))));
     if (o.scale && o.type !== 'light') {
       const sc = el('div', { class: 'row3' }, [0, 1, 2].map(i => numInput(o.scale[i], (v) => { o.scale[i] = Math.max(0.05, v); apply(); })));
       root.appendChild(field(o.type === 'door' ? 'W / H / thick' : 'Size', sc));
     }
-    root.appendChild(field('On ground', el('input', { type: 'checkbox', ...(o.grounded ? { checked: '' } : {}), onchange: (e) => { o.grounded = e.target.checked; apply(o.type === 'light'); } })));
+    root.appendChild(field('Snap to ground', el('input', { type: 'checkbox', ...(o.grounded ? { checked: '' } : {}), onchange: (e) => { o.grounded = e.target.checked; apply(o.type === 'light'); } })));
+    root.appendChild(el('div', { class: 'note', text: 'Drag the green gizmo arrow or press PgUp / PgDn (Shift = 1 m) to lift it into the air — that unticks snap. R / Shift+R rotate 15°, , and . rotate 90°. Hold Shift while dragging to snap.' }));
   }
   if (o.color !== undefined) root.appendChild(field('Color', el('input', { type: 'color', value: o.color, oninput: (e) => { o.color = e.target.value; }, onchange: () => apply(true) })));
   if (o.solid !== undefined) root.appendChild(field('Solid', el('input', { type: 'checkbox', ...(o.solid ? { checked: '' } : {}), onchange: (e) => { o.solid = e.target.checked; pushUndo(); } })));
@@ -442,13 +531,13 @@ function renderObjectPanel(root, o) {
 }
 function updateHint() {
   const h = {
-    select: 'Click to select · 1/2/3 gizmo mode · Del delete · Ctrl+D duplicate · F frame · Ctrl+Z undo · P play',
+    select: 'Click to select · 1/2/3 move/rotate/scale · R , . rotate · PgUp/PgDn lift · Shift snaps · Del delete · Ctrl+D duplicate · F frame · Ctrl+Z undo · P play',
     terrain: 'Click-drag to sculpt · [ ] brush size · release to re-snap objects',
     path: 'Click points · double-click / Enter to finish · Esc cancel',
     treebrush: 'Click-drag to scatter trees · [ ] brush size',
     spawn: 'Click the ground to place the spawn point',
-  }[ed.tool] || 'Click on the ground (or on an object) to place · Esc back to select';
-  $('hint').textContent = h + '  ·  right-drag orbit · middle-drag pan · wheel zoom · WASD E/C fly';
+  }[ed.tool] || 'Click the ground or any object to place it there · R / Shift+R , . rotate the preview · Esc back to select';
+  $('hint').textContent = h + '  ·  drag a yellow edge handle to resize the map  ·  right-drag orbit · middle-drag pan · wheel zoom · WASD E/C fly';
 }
 
 // =====================================================================
@@ -485,7 +574,7 @@ function startPlay(here) {
   playCam.rotation.set(0, yaw, 0, 'YXZ');
   playCam.position.set(x, player.feet + player.height, z);
   ed.mode = 'play'; camera = playCam; workLight.visible = false;
-  select(null); world.spawnMarker.visible = false; brushRing.visible = false; ghost.visible = false; pathPreview.visible = false; orbit.enabled = false;
+  select(null); world.spawnMarker.visible = false; brushRing.visible = false; ghost.visible = false; pathPreview.visible = false; mapEdge.visible = false; orbit.enabled = false;
   flashlight.intensity = flashOn ? 70 : 0;
   colliders = world.colliders();
   document.body.classList.add('playing');
@@ -496,7 +585,7 @@ function stopPlay() {
   if (ed.mode !== 'play') return;
   ed.mode = 'edit'; camera = editCam; workLight.visible = true;
   document.body.classList.remove('playing'); $('clickToPlay').classList.remove('show');
-  world.spawnMarker.visible = true; orbit.enabled = true; flashlight.intensity = 0; aim.active = false;
+  world.spawnMarker.visible = true; mapEdge.visible = true; orbit.enabled = true; flashlight.intensity = 0; aim.active = false;
   setTool(ed.tool);
   // reset runtime state so the next play starts fresh
   for (const o of world.data.objects) { if (o.type === 'door') world.setDoor(o.id, false); }

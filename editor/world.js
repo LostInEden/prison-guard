@@ -100,6 +100,7 @@ export class World {
     if (this.terrain) { this.group.remove(this.terrain); this.terrain.geometry.dispose(); }
     const geo = new THREE.PlaneGeometry(size, size, seg, seg);
     geo.rotateX(-Math.PI / 2);
+    TEX.grass.repeat.set(size / 3.75, size / 3.75);   // keep the grass the same scale whatever the map size
     this.terrain = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: TEX.grass, roughness: 1 }));
     this.terrain.receiveShadow = true;
     this.terrain.userData.terrain = true;
@@ -119,6 +120,17 @@ export class World {
     const ix = Math.floor(fx), iz = Math.floor(fz), tx = fx - ix, tz = fz - iz;
     const h00 = heights[iz * n + ix], h10 = heights[iz * n + ix + 1], h01 = heights[(iz + 1) * n + ix], h11 = heights[(iz + 1) * n + ix + 1];
     return (h00 * (1 - tx) + h10 * tx) * (1 - tz) + (h01 * (1 - tx) + h11 * tx) * tz;
+  }
+  // change the map's edge length (metres). Existing heights are resampled into the new grid,
+  // so growing keeps what you sculpted and shrinking just clips the outside.
+  resizeTerrain(size) {
+    size = THREE.MathUtils.clamp(Math.round(size), 40, 2000);
+    const seg = THREE.MathUtils.clamp(Math.round(size / 3), 16, 240);   // ~3 m per vertex, capped for performance
+    const n = seg + 1, step = size / seg, half = size / 2, heights = new Array(n * n);
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) heights[j * n + i] = this.sampleHeight(-half + i * step, -half + j * step);
+    this.data.terrain = { size, seg, heights };
+    this.buildTerrain();
+    this.groundAll();
   }
   sculpt(x, z, radius, strength, mode, target = 0) {
     const { size, seg, heights } = this.data.terrain, n = seg + 1, step = size / seg, half = size / 2;
@@ -180,14 +192,24 @@ export class World {
     g.position.set(o.pos[0], o.pos[1], o.pos[2]); g.rotation.set(0, o.rot || 0, 0);
     if (o.scale && o.type !== 'path' && o.type !== 'light') g.scale.set(o.scale[0], o.scale[1], o.scale[2]);
   }
-  // read transform back from a gizmo-manipulated group
-  pullTransform(o) {
+  // read transform back from a gizmo-manipulated group.
+  //   lifting — true while the user is dragging along the Y axis. A grounded object that gets lifted
+  //             comes off the ground (a pole light instead grows/shrinks its pole).
+  //   final   — true when the drag ends; pole lights rebuild their mesh then (not every tick, or the
+  //             gizmo would be left holding a mesh that is no longer in the scene).
+  pullTransform(o, lifting = false, final = false) {
     const g = this.meshes.get(o.id); if (!g) return;
+    if (o.grounded) {
+      const ground = this.sampleHeight(g.position.x, g.position.z);
+      if (lifting && Math.abs(g.position.y - (ground + (o.offset || 0))) > 0.02) {
+        if (o.type === 'light') o.offset = Math.max(0, g.position.y - ground);
+        else o.grounded = false;
+      } else g.position.y = ground + (o.offset || 0);   // slide along the terrain
+    }
     o.pos = [g.position.x, g.position.y, g.position.z]; o.rot = g.rotation.y;
     if (o.type !== 'path' && o.type !== 'light') o.scale = [Math.max(0.05, g.scale.x), Math.max(0.05, g.scale.y), Math.max(0.05, g.scale.z)];
-    if (o.grounded) { o.pos[1] = this.sampleHeight(o.pos[0], o.pos[2]) + (o.offset || 0); }
     this.syncTransform(o);
-    if (o.type === 'light') this.rebuildObject(o.id);
+    if (final && o.type === 'light' && o.grounded) this.rebuildObject(o.id);
   }
 
   buildObject(o) {
@@ -237,7 +259,8 @@ export class World {
       }
       case 'light': {
         const light = new THREE.PointLight(col, o.on ? o.intensity : 0, o.distance, 2); g.add(light);
-        const fix = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), new THREE.MeshStandardMaterial({ color: 0xdddddd, emissive: col, emissiveIntensity: o.on ? 2.5 : 0 })); g.add(fix);
+        const fix = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), new THREE.MeshStandardMaterial({ color: 0xdddddd, emissive: col, emissiveIntensity: o.on ? 2.5 : 0 })); g.add(fix);
+        const hit = new THREE.Mesh(new THREE.SphereGeometry(0.5, 8, 6), new THREE.MeshBasicMaterial({ visible: false })); g.add(hit);   // generous click target
         if (o.grounded) { // pole from the ground to the lamp
           const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, o.offset || 2.6, 8), matMetal); pole.position.y = -(o.offset || 2.6) / 2; g.add(pole);
         }
