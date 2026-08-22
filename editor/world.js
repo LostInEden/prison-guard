@@ -10,12 +10,15 @@ export const DEFAULTS = {
   sphere:   { scale: [1, 1, 1],     color: '#c0a060', solid: true,  grounded: true, interact: 'none', group: '', text: '' },
   wall:     { scale: [4, 3, 0.3],   color: '#9a9d97', solid: true,  grounded: true, interact: 'none', group: '', text: '' },
   ramp:     { scale: [3, 1, 4],     color: '#7a7d78', solid: false, grounded: true },
-  door:     { scale: [1.2, 2.4, 0.1], color: '#4a5560', locked: false, keyName: 'Key', grounded: true, bars: false },
+  // swing: 'auto' opens away from whoever opens it; 'in' / 'out' always swing towards local -z / +z
+  door:     { scale: [1.2, 2.4, 0.1], color: '#4a5560', locked: false, keyName: 'Key', grounded: true, bars: false, swing: 'auto' },
   tree:     { scale: [1, 1, 1],     color: '#17301c', grounded: true },
   light:    { color: '#fff1d6', intensity: 20, distance: 18, on: true, group: '', grounded: true, offset: 2.6 },
-  path:     { width: 3, color: '#2b2d30', points: [] },
+  path:     { width: 3, color: '#2b2d30', points: [], smooth: true },
+  fence:    { points: [], height: 2.2, spacing: 3, style: 'chainlink', color: '#9aa1a8', solid: true },
 };
-export const TYPE_LABELS = { box: 'Box', cylinder: 'Cylinder', sphere: 'Sphere', wall: 'Wall', ramp: 'Ramp', door: 'Door', tree: 'Tree', light: 'Light', path: 'Path', hollow: 'Hollow' };
+export const TYPE_LABELS = { box: 'Box', cylinder: 'Cylinder', sphere: 'Sphere', wall: 'Wall', ramp: 'Ramp', door: 'Door', tree: 'Tree', light: 'Light', path: 'Path', hollow: 'Hollow', fence: 'Fence' };
+export const LINE_TYPES = ['path', 'fence'];   // drawn as a chain of points, not placed
 export const HOLLOW_TYPES = ['box', 'wall', 'cylinder', 'sphere'];   // shapes that can be hollowed together
 
 let nextId = 1;
@@ -47,6 +50,11 @@ export const TEX = {
   steel: makeTexture(256, (ctx, s) => {
     ctx.fillStyle = '#4b5057'; ctx.fillRect(0, 0, s, s); speckle(ctx, s, 5000, 0.1);
     ctx.strokeStyle = 'rgba(20,22,26,.8)'; ctx.lineWidth = 4; ctx.strokeRect(4, 4, s - 8, s - 8);
+  }),
+  // one diamond of chain-link on a transparent tile (tile = 0.25 m once the UVs are scaled)
+  chainlink: makeTexture(64, (ctx, s) => {
+    ctx.clearRect(0, 0, s, s); ctx.strokeStyle = '#b9bfc6'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(0, s / 2); ctx.lineTo(s / 2, 0); ctx.lineTo(s, s / 2); ctx.lineTo(s / 2, s); ctx.closePath(); ctx.stroke();
   }),
 };
 const matTrunk = new THREE.MeshStandardMaterial({ color: 0x3a2a1c, roughness: 1 });
@@ -143,7 +151,8 @@ function hollowSegments(o) {
 //  default / starter world
 // ---------------------------------------------------------------------
 export function emptyWorld() {
-  return { version: 1, name: 'Untitled', terrain: { size: 300, seg: 100, heights: null }, objects: [], spawn: { pos: [0, 0, 6], yaw: 0 }, settings: { time: 0.1, fog: 0.006 } };
+  // groundMode: 'center' snaps an object's origin to the terrain; 'highest' sits it on the highest ground under its footprint so nothing sinks in
+  return { version: 1, name: 'Untitled', terrain: { size: 300, seg: 100, heights: null }, objects: [], spawn: { pos: [0, 0, 6], yaw: 0 }, settings: { time: 0.1, fog: 0.006, groundMode: 'highest' } };
 }
 export function starterWorld() {
   const w = emptyWorld();
@@ -257,6 +266,7 @@ export class World {
     for (const id of [...this.meshes.keys()]) this.removeObject(id, false);
     this.data = structuredClone(data);
     if (!this.data.settings) this.data.settings = { time: 0.1, fog: 0.006 };
+    if (!this.data.settings.groundMode) this.data.settings.groundMode = 'center';   // older worlds keep their placement
     this.buildTerrain();
     for (const o of this.data.objects) this.buildObject(o);
     this.updateSpawnMarker();
@@ -276,7 +286,40 @@ export class World {
     if (fromData) this.data.objects = this.data.objects.filter(o => o.id !== id);
   }
   rebuildObject(id) { const o = this.getObject(id); if (!o) return; this.removeObject(id, false); this.buildObject(o); }
-  groundAll() { for (const o of this.data.objects) if (o.grounded) { o.pos[1] = this.sampleHeight(o.pos[0], o.pos[2]) + (o.offset || 0); this.syncTransform(o); } for (const o of this.data.objects) if (o.type === 'path') this.rebuildObject(o.id); this.updateSpawnMarker(); }
+  groundAll() { for (const o of this.data.objects) if (o.grounded) { o.pos[1] = this.groundY(o) + (o.offset || 0); this.syncTransform(o); } for (const o of this.data.objects) if (LINE_TYPES.includes(o.type)) this.rebuildObject(o.id); this.updateSpawnMarker(); }
+  // the terrain height an object should sit at if its origin were at (x, z). In 'highest' mode that is the
+  // highest ground anywhere under its footprint (hollows: under every part), so no corner sinks in.
+  groundY(o, x = o.pos[0], z = o.pos[2], mode = this.data.settings.groundMode) {
+    if (mode !== 'highest') return this.sampleHeight(x, z);
+    let h = -Infinity;
+    const obb = (cx, cz, sx, sz, rot, ox = 0, oz = 0) => {
+      const c = Math.cos(rot), s = Math.sin(rot), n = 4;
+      for (let i = 0; i <= n; i++) for (let j = 0; j <= n; j++) {
+        const lx = (i / n - 0.5) * sx + ox, lz = (j / n - 0.5) * sz + oz;
+        h = Math.max(h, this.sampleHeight(cx + lx * c + lz * s, cz - lx * s + lz * c));
+      }
+    };
+    const r = o.rot || 0;
+    if (o.type === 'hollow') {
+      const c = Math.cos(r), s = Math.sin(r);
+      for (const p of o.parts) {
+        const half = partKind(p) === 'halfcyl';
+        obb(x + p.pos[0] * c + p.pos[2] * s, z - p.pos[0] * s + p.pos[2] * c, p.scale[0], half ? p.scale[2] / 2 : p.scale[2], r + (p.rot || 0), 0, half ? -p.scale[2] / 4 : 0);
+      }
+    } else if (o.type === 'door') obb(x, z, o.scale[0], Math.max(0.3, o.scale[2]), r, o.scale[0] / 2, 0);
+    else if (o.scale && o.type !== 'tree') obb(x, z, o.scale[0], o.half ? o.scale[2] / 2 : o.scale[2], r, 0, o.half ? -o.scale[2] / 4 : 0);
+    else h = this.sampleHeight(x, z);
+    return h;
+  }
+  // floor height inside a hollow at a world point, or null if the point is not over any part
+  hollowFloorAt(o, x, z) {
+    const H = this.meshes.get(o.id)?.userData.hollow; if (!H) return null;
+    const c = Math.cos(o.rot || 0), s = Math.sin(o.rot || 0), dx = x - o.pos[0], dz = z - o.pos[2];
+    const lx = dx * c - dz * s, lz = dx * s + dz * c;
+    let best = null;
+    for (const q of H.parts) { _v.set(lx, 0, lz).applyMatrix4(q.inv); if (insideUnit(q.kind, _v.x, 0.5, _v.z)) { const f = o.pos[1] + q.p.pos[1] + H.t; if (best === null || f < best) best = f; } }
+    return best;
+  }
   syncTransform(o) {
     const g = this.meshes.get(o.id); if (!g) return;
     g.position.set(o.pos[0], o.pos[1], o.pos[2]); g.rotation.set(0, o.rot || 0, 0);
@@ -290,7 +333,7 @@ export class World {
   pullTransform(o, lifting = false, final = false) {
     const g = this.meshes.get(o.id); if (!g) return;
     if (o.grounded) {
-      const ground = this.sampleHeight(g.position.x, g.position.z);
+      const ground = this.groundY(o, g.position.x, g.position.z);
       if (lifting && Math.abs(g.position.y - (ground + (o.offset || 0))) > 0.02) {
         if (o.type === 'light') o.offset = Math.max(0, g.position.y - ground);
         else o.grounded = false;
@@ -369,6 +412,7 @@ export class World {
         if (geo) { const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: col, map: TEX.asphalt, roughness: 0.95, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })); m.receiveShadow = true; g.add(m); }
         break;
       }
+      case 'fence': { this.buildFence(o, g); break; }
     }
     g.position.set(o.pos[0], o.pos[1], o.pos[2]);
     g.rotation.y = o.rot || 0;
@@ -377,8 +421,25 @@ export class World {
     this.meshes.set(o.id, g);
     return g;
   }
+  // the centre line of a path: the clicked points, run through a spline when `smooth` (so corners bend
+  // instead of mitring), sampled every ~1 m. Returns [[x, z], ...].
+  static centerLine(points, smooth, step = 1) {
+    const pts = points.filter((p, i) => i === 0 || Math.hypot(p[0] - points[i - 1][0], p[1] - points[i - 1][1]) > 1e-3);
+    if (pts.length < 2) return pts;
+    if (smooth && pts.length >= 3) {
+      const curve = new THREE.CatmullRomCurve3(pts.map(([x, z]) => new THREE.Vector3(x, 0, z)), false, 'centripetal');
+      return curve.getSpacedPoints(Math.max(2, Math.ceil(curve.getLength() / step))).map(v => [v.x, v.z]);
+    }
+    const out = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [x0, z0] = pts[i], [x1, z1] = pts[i + 1], n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, z1 - z0) / step));
+      for (let k = 0; k < n; k++) out.push([x0 + (x1 - x0) * k / n, z0 + (z1 - z0) * k / n]);
+    }
+    out.push(pts[pts.length - 1]);
+    return out;
+  }
   buildPathGeometry(o) {
-    const pts = o.points; if (!pts || pts.length < 2) return null;
+    const line = World.centerLine(o.points || [], o.smooth !== false); if (line.length < 2) return null;
     const w = o.width / 2, verts = [], uvs = [], idx = [];
     let row = 0, dist = 0;
     const pushRow = (x, z, dx, dz) => {
@@ -389,17 +450,56 @@ export class World {
       if (row > 0) { const b = row * 2; idx.push(b - 2, b, b - 1, b - 1, b, b + 1); }
       row++;
     };
-    for (let i = 0; i < pts.length - 1; i++) {
-      const [x0, z0] = pts[i], [x1, z1] = pts[i + 1];
-      const len = Math.hypot(x1 - x0, z1 - z0); if (len < 1e-3) continue;
-      const dx = (x1 - x0) / len, dz = (z1 - z0) / len, n = Math.max(1, Math.ceil(len / 1.5));
-      for (let k = 0; k <= n; k++) { if (k === n && i < pts.length - 2) break; const t = k / n; pushRow(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t, dx, dz); dist += len / n; }
+    for (let i = 0; i < line.length; i++) {
+      const [x, z] = line[i], [px, pz] = line[Math.max(0, i - 1)], [nx, nz] = line[Math.min(line.length - 1, i + 1)];
+      let dx = nx - px, dz = nz - pz; const len = Math.hypot(dx, dz) || 1; dx /= len; dz /= len;   // central-difference tangent
+      if (i > 0) dist += Math.hypot(x - px, z - pz);
+      pushRow(x, z, dx, dz);
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
     geo.setIndex(idx); geo.computeVertexNormals();
     return geo;
+  }
+
+  // posts every `spacing` metres along the clicked points, panels between them that follow the slope
+  buildFence(o, g) {
+    const pts = (o.points || []).filter((p, i) => i === 0 || Math.hypot(p[0] - o.points[i - 1][0], p[1] - o.points[i - 1][1]) > 1e-3);
+    if (pts.length < 2) return;
+    const col = new THREE.Color(o.color || '#9aa1a8');
+    const matPost = new THREE.MeshStandardMaterial({ color: col, roughness: 0.6, metalness: o.style === 'rails' ? 0.1 : 0.7 });
+    const matMesh = new THREE.MeshStandardMaterial({ map: TEX.chainlink.clone(), transparent: true, alphaTest: 0.4, side: THREE.DoubleSide, roughness: 0.5, metalness: 0.6, color: col });
+    matMesh.map.needsUpdate = true;
+    const postGeo = new THREE.CylinderGeometry(0.045, 0.05, 1, 8); postGeo.translate(0, 0.5, 0);
+    const H = o.height;
+    const post = (x, y, z) => { const m = new THREE.Mesh(postGeo, matPost); m.position.set(x, y, z); m.scale.y = H + 0.05; m.castShadow = true; g.add(m); };
+    const panel = (x0, y0, z0, x1, y1, z1) => {
+      const d = Math.hypot(x1 - x0, z1 - z0), dy = y1 - y0, len = Math.hypot(d, dy); if (d < 1e-3) return;
+      const frame = new THREE.Group(); frame.position.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+      frame.rotation.y = Math.atan2(-(z1 - z0), x1 - x0);   // local x along the run
+      const tilt = new THREE.Group(); tilt.rotation.z = Math.atan2(dy, d); frame.add(tilt);   // lift the far end
+      if (o.style === 'rails') {
+        for (const f of [0.22, 0.55, 0.88]) { const r = new THREE.Mesh(new THREE.BoxGeometry(len, 0.07, 0.035), matPost); r.position.y = H * f; r.castShadow = true; tilt.add(r); }
+      } else {
+        const pg = new THREE.PlaneGeometry(len, H); pg.translate(0, H / 2, 0);
+        const uv = pg.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * len / 0.25, uv.getY(i) * H / 0.25);
+        tilt.add(new THREE.Mesh(pg, matMesh));
+        for (const y of [0.05, H]) { const r = new THREE.Mesh(new THREE.BoxGeometry(len, 0.03, 0.03), matPost); r.position.y = y; tilt.add(r); }
+      }
+      g.add(frame);
+    };
+    let prev = null;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [x0, z0] = pts[i], [x1, z1] = pts[i + 1], n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, z1 - z0) / (o.spacing || 3)));
+      for (let k = 0; k <= n; k++) {
+        if (k === n && i < pts.length - 2) break;   // the corner post belongs to the next run
+        const x = x0 + (x1 - x0) * k / n, z = z0 + (z1 - z0) * k / n, y = this.sampleHeight(x, z) - 0.03;
+        post(x, y, z);
+        if (prev) panel(prev[0], prev[1], prev[2], x, y, z);
+        prev = [x, y, z];
+      }
+    }
   }
 
   // ---------- spawn
@@ -421,11 +521,12 @@ export class World {
 
   // ---------- runtime helpers (play mode)
   doorState(id) { return this.meshes.get(id)?.userData.door; }
-  setDoor(id, open) { const d = this.doorState(id); if (d) d.open = open; }
+  // dir: +1 swings the leaf towards the door's local -z, -1 towards +z
+  setDoor(id, open, dir = 1) { const d = this.doorState(id); if (d) { d.open = open; if (open) d.dir = dir; } }
   updateDoors(dt) {
     for (const [id, g] of this.meshes) {
       const d = g.userData.door; if (!d) continue;
-      const target = d.open ? -Math.PI / 2 : 0;
+      const target = d.open ? (d.dir || 1) * Math.PI / 2 : 0;
       d.angle += (target - d.angle) * Math.min(1, dt * 8);
       const hinge = g.getObjectByName('hinge'); if (hinge) hinge.rotation.y = d.angle;
     }
@@ -439,11 +540,19 @@ export class World {
     const out = [];
     for (const o of this.data.objects) {
       if (o.type === 'door') {
-        const d = this.doorState(o.id); if (d && (d.open || d.angle < -0.5)) continue;
+        const d = this.doorState(o.id); if (d && (d.open || Math.abs(d.angle) > 0.5)) continue;
         const c = Math.cos(o.rot || 0), s = Math.sin(o.rot || 0), hx = o.scale[0] / 2;
         out.push({ cx: o.pos[0] + c * hx, cz: o.pos[2] - s * hx, hx, hz: Math.max(0.12, o.scale[2] / 2), rot: o.rot || 0, top: o.pos[1] + o.scale[1], bottom: o.pos[1] });
       } else if (o.type === 'tree') {
         out.push({ cx: o.pos[0], cz: o.pos[2], hx: 0.3 * o.scale[0], hz: 0.3 * o.scale[2], rot: 0, top: o.pos[1] + 2, bottom: o.pos[1] });
+      } else if (o.type === 'fence') {
+        if (!o.solid) continue;
+        const pts = o.points || [];
+        for (let i = 0; i < pts.length - 1; i++) {
+          const [x0, z0] = pts[i], [x1, z1] = pts[i + 1], len = Math.hypot(x1 - x0, z1 - z0); if (len < 1e-3) continue;
+          const h0 = this.sampleHeight(x0, z0), h1 = this.sampleHeight(x1, z1);
+          out.push({ cx: (x0 + x1) / 2, cz: (z0 + z1) / 2, hx: len / 2, hz: 0.06, rot: Math.atan2(-(z1 - z0), x1 - x0), top: Math.max(h0, h1) + o.height, bottom: Math.min(h0, h1) - 1 });
+        }
       } else if (o.type === 'hollow') {
         if (!o.solid) continue;
         const H = this.meshes.get(o.id)?.userData.hollow; if (!H) continue;

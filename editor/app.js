@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, starterWorld, emptyWorld, uid } from './world.js';
+import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, starterWorld, emptyWorld, uid } from './world.js';
 
 const $ = (id) => document.getElementById(id);
 const clamp = THREE.MathUtils.clamp;
@@ -172,7 +172,11 @@ function hitWorld(e, includeObjects = true) {
     if (h.object === world.terrain) return { point: h.point, terrain: true };
     let o = h.object; while (o && !o.userData.id && !o.userData.spawn) o = o.parent;
     if (o?.userData.spawn) return { point: h.point, spawn: true };
-    if (o?.userData.id) { const obj = world.getObject(o.userData.id); if (obj?.type === 'path') continue; return { point: h.point, object: obj }; }
+    if (o?.userData.id) {
+      const obj = world.getObject(o.userData.id); if (obj?.type === 'path') continue;
+      const normal = h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld) : null;
+      return { point: h.point, object: obj, normal };
+    }
   }
   return null;
 }
@@ -219,7 +223,7 @@ canvas.addEventListener('pointerdown', (e) => {
       break;
     }
     case 'treebrush': { if (hit) scatterTrees(hit.point); break; }
-    case 'path': {
+    case 'path': case 'fence': {
       if (!hit) break;
       ed.pathPoints.push([hit.point.x, hit.point.z]); updatePathPreview();
       break;
@@ -274,7 +278,7 @@ window.addEventListener('pointerup', () => {
   if (ed.mode === 'edit' && (ed.tool === 'terrain')) { world.groundAll(); refreshSelectionBox(); updateMapEdge(); pushUndo(); }
   if (ed.mode === 'edit' && ed.tool === 'treebrush') pushUndo();
 });
-canvas.addEventListener('dblclick', () => { if (ed.mode === 'edit' && ed.tool === 'path') finishPath(); });
+canvas.addEventListener('dblclick', () => { if (ed.mode === 'edit' && LINE_TYPES.includes(ed.tool)) finishPath(); });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 const isPlaceTool = () => ['box', 'wall', 'ramp', 'cylinder', 'sphere', 'door', 'light', 'tree'].includes(ed.tool);
@@ -286,9 +290,37 @@ function placeObject(type, hit) {
   if (type === 'light') { def.grounded = hit.terrain; def.pos[1] = hit.point.y + (hit.terrain ? DEFAULTS.light.offset : 0.3); }
   if (type === 'tree') def.scale = [0.8 + Math.random() * 0.8, 0.8 + Math.random() * 0.8, 0.8 + Math.random() * 0.8];
   def.rot = placeRot();   // doors/walls square to the view, plus whatever you dialled in with R / , / .
+  const attached = type === 'door' && hit.object?.type === 'hollow' && attachDoorToHollow(def, hit);
   const o = world.addObject(def);
-  if (o.grounded) { o.pos[1] = world.sampleHeight(o.pos[0], o.pos[2]) + (o.offset || 0); world.syncTransform(o); }
+  if (o.grounded) { o.pos[1] = world.groundY(o) + (o.offset || 0); world.syncTransform(o); }
   ed.tool = 'select'; setTool('select'); select(o);
+  if (attached) toast('Doorway cut — the door opens inward');
+}
+// a door clicked onto a hollow's wall: sit it flush in the wall on the floor, cut the doorway, swing inward
+function attachDoorToHollow(def, hit) {
+  const h = hit.object, n = hit.normal?.clone(); if (!n) return false;
+  n.y = 0; if (n.lengthSq() < 0.3) return false;   // roof / floor — not a wall
+  n.normalize();
+  const rot = Math.atan2(n.x, n.z);                    // door's local +z faces outward along n
+  const ux = n.z, uz = -n.x;                           // door's local +x (hinge -> latch) runs along the wall
+  const [w, hgt] = DEFAULTS.door.scale, t = h.thickness;
+  const cx = hit.point.x - n.x * t / 2, cz = hit.point.z - n.z * t / 2;   // middle of the wall
+  const floor = world.hollowFloorAt(h, cx - n.x * t, cz - n.z * t) ?? world.hollowFloorAt(h, cx, cz) ?? (h.pos[1] + t);
+  def.pos = [cx - ux * w / 2, floor, cz - uz * w / 2]; def.rot = rot; def.grounded = false; def.swing = 'in'; def.attachedTo = h.id;
+  const r = h.rot || 0, c = Math.cos(r), s = Math.sin(r), dx = cx - h.pos[0], dz = cz - h.pos[2];   // world -> hollow local
+  h.cuts = h.cuts || [];
+  h.cuts.push({ type: 'box', pos: [dx * c - dz * s, floor - h.pos[1] + 0.01, dx * s + dz * c], rot: rot - r, scale: [w + 0.06, hgt + 0.04, t + 0.6] });
+  world.rebuildObject(h.id);
+  return true;
+}
+// sit every selected object on the highest ground under its footprint (never sinks in), and keep it snapped
+function sitOnGround() {
+  const objs = selectedObjects().filter(o => !LINE_TYPES.includes(o.type));
+  if (!objs.length) { toast('Nothing selected'); return; }
+  pushUndo();
+  for (const o of objs) { o.grounded = true; o.pos[1] = world.groundY(o, o.pos[0], o.pos[2], 'highest') + (o.offset || 0); if (o.type === 'light') world.rebuildObject(o.id); else world.syncTransform(o); }
+  if (selected) gizmo.attach(world.meshes.get(selected.id));
+  refreshSelectionBox(); renderPanel(); toast(`${objs.length} object${objs.length > 1 ? 's' : ''} sat on the ground`);
 }
 function sculptAt(p) {
   const b = ed.brush;
@@ -313,13 +345,15 @@ function scatterTrees(p) {
 function finishPath() {
   if (ed.pathPoints.length >= 2) {
     pushUndo();
-    const o = world.addObject({ type: 'path', pos: [0, 0, 0], points: ed.pathPoints.slice() });
-    ed.pathPoints = []; updatePathPreview(); toast('Path created');
+    const type = ed.tool === 'fence' ? 'fence' : 'path';
+    const o = world.addObject({ type, pos: [0, 0, 0], points: ed.pathPoints.slice() });
+    ed.pathPoints = []; updatePathPreview(); toast(type === 'fence' ? 'Fence built' : 'Path created');
     setTool('select'); select(o);
   } else { ed.pathPoints = []; updatePathPreview(); }
 }
 function updatePathPreview() {
-  const pts = ed.pathPoints.map(([x, z]) => new THREE.Vector3(x, world.sampleHeight(x, z) + 0.3, z));
+  const line = ed.tool === 'path' ? World.centerLine(ed.pathPoints, true) : ed.pathPoints;   // paths preview their smoothed route
+  const pts = line.map(([x, z]) => new THREE.Vector3(x, world.sampleHeight(x, z) + 0.3, z));
   pathPreview.geometry.dispose(); pathPreview.geometry = new THREE.BufferGeometry().setFromPoints(pts);
   pathPreview.visible = pts.length > 0;
 }
@@ -341,6 +375,8 @@ window.addEventListener('keydown', (e) => {
     case 'KeyQ': setTool('select'); break;
     case 'KeyT': setTool('terrain'); break;
     case 'KeyH': setTool('path'); break;
+    case 'KeyN': setTool('fence'); break;
+    case 'End': e.preventDefault(); sitOnGround(); break;
     case 'Digit1': setGizmoMode('translate'); break;
     case 'Digit2': setGizmoMode('rotate'); break;
     case 'Digit3': setGizmoMode('scale'); break;
@@ -350,8 +386,8 @@ window.addEventListener('keydown', (e) => {
     case 'PageUp': e.preventDefault(); liftBy(e.shiftKey ? 1 : 0.25); break;
     case 'PageDown': e.preventDefault(); liftBy(e.shiftKey ? -1 : -0.25); break;
     case 'Delete': case 'Backspace': if (selected) deleteSelected(); break;
-    case 'Escape': if (ed.tool === 'path' && ed.pathPoints.length) { ed.pathPoints = []; updatePathPreview(); } else { select(null); setTool('select'); } break;
-    case 'Enter': if (ed.tool === 'path') finishPath(); break;
+    case 'Escape': if (LINE_TYPES.includes(ed.tool) && ed.pathPoints.length) { ed.pathPoints = []; updatePathPreview(); } else { select(null); setTool('select'); } break;
+    case 'Enter': if (LINE_TYPES.includes(ed.tool)) finishPath(); break;
     case 'KeyF': if (selected) focusOn(world.meshes.get(selected.id).position); break;
     case 'KeyP': startPlay(false); break;
     case 'KeyG': if (selected) hollowSelection(); break;
@@ -391,11 +427,18 @@ function hollowSelection() {
 }
 // subtract the selected boxes from the selected hollow (doorways, windows)
 function carveSelection() {
-  const objs = selectedObjects(), hollow = objs.find(o => o.type === 'hollow'), boxes = objs.filter(o => o.type === 'box' || o.type === 'wall');
-  if (!hollow || !boxes.length) { toast('Select a hollow and at least one box'); return; }
+  const objs = selectedObjects(), hollow = objs.find(o => o.type === 'hollow'), boxes = objs.filter(o => o.type === 'box' || o.type === 'wall' || o.type === 'door');
+  if (!hollow || !boxes.length) { toast('Select a hollow and at least one box or door'); return; }
   pushUndo();
   const r = hollow.rot || 0, c = Math.cos(r), s = Math.sin(r);
   for (const b of boxes) {
+    if (b.type === 'door') {   // a door stays; its doorway (centred on the leaf, through the wall) is cut
+      const br = b.rot || 0, ux = Math.cos(br), uz = -Math.sin(br), w = b.scale[0];
+      const mx = b.pos[0] + ux * w / 2, mz = b.pos[2] + uz * w / 2, dx = mx - hollow.pos[0], dz = mz - hollow.pos[2];
+      hollow.cuts.push({ type: 'box', pos: [dx * c - dz * s, b.pos[1] - hollow.pos[1] + 0.01, dx * s + dz * c], rot: br - r, scale: [w + 0.06, b.scale[1] + 0.04, hollow.thickness + 0.6] });
+      b.attachedTo = hollow.id; if (b.swing === 'auto') b.swing = 'in';
+      continue;
+    }
     const dx = b.pos[0] - hollow.pos[0], dz = b.pos[2] - hollow.pos[2];   // world -> hollow local
     hollow.cuts.push({ type: 'box', pos: [dx * c - dz * s, b.pos[1] - hollow.pos[1], dx * s + dz * c], rot: (b.rot || 0) - r, scale: [...b.scale] });
     world.removeObject(b.id);
@@ -505,7 +548,10 @@ function renderPanel() {
     root.appendChild(el('div', { class: 'note', text: 'Click-drag to scatter trees. Select + Delete removes one; select and Ctrl+D duplicates.' }));
   } else if (ed.tool === 'path') {
     root.appendChild(el('h3', { text: 'PATH' }));
-    root.appendChild(el('div', { class: 'note', text: `Click points on the ground (${ed.pathPoints.length} so far). Double-click or Enter to finish, Esc to cancel. The path follows the terrain; you can change its width after.` }));
+    root.appendChild(el('div', { class: 'note', text: `Click points on the ground (${ed.pathPoints.length} so far). Double-click or Enter to finish, Esc to cancel. The path follows the terrain and rounds its corners; you can change width and smoothing after.` }));
+  } else if (ed.tool === 'fence') {
+    root.appendChild(el('h3', { text: 'FENCE' }));
+    root.appendChild(el('div', { class: 'note', text: `Click the corner points (${ed.pathPoints.length} so far). Double-click or Enter to finish, Esc to cancel. Posts follow the terrain; height, style (chain-link / rails), post spacing and colour are editable after.` }));
   } else if (ed.tool === 'spawn') {
     root.appendChild(el('h3', { text: 'SPAWN POINT' }));
     root.appendChild(el('div', { class: 'note', text: 'Click on the ground to move where the guard starts. He faces away from the camera.' }));
@@ -522,6 +568,8 @@ function renderPanel() {
   const sec = el('div', { class: 'sec' }, [el('h3', { text: 'WORLD' })]);
   sec.appendChild(range('Time of day', s.time, 0, 1, 0.01, (v) => { s.time = v; applyTime(v); }, (v) => v < 0.15 ? 'night' : v < 0.5 ? 'dusk' : 'day'));
   sec.appendChild(range('Fog', s.fog, 0, 0.03, 0.0005, (v) => { s.fog = v; scene.fog.density = v; }, (v) => v.toFixed(4)));
+  sec.appendChild(field('No sinking', el('input', { type: 'checkbox', ...(s.groundMode === 'highest' ? { checked: '' } : {}), onchange: (e) => { pushUndo(); s.groundMode = e.target.checked ? 'highest' : 'center'; world.groundAll(); refreshSelectionBox(); toast(e.target.checked ? 'Objects sit on the highest ground under them' : 'Objects snap at their centre'); } })));
+  sec.appendChild(el('div', { class: 'note', text: 'No sinking: anything snapped to the ground sits on the highest terrain under its whole footprint. End / SIT ON GROUND does that for the selection right now.' }));
   {
     const cur = world.data.terrain.size;
     const sizes = [100, 200, 300, 400, 600, 800, 1000, 1500];
@@ -548,13 +596,16 @@ function renderMultiPanel(root) {
   } else if (hollow) root.appendChild(el('div', { class: 'note', text: 'To carve: click the hollow last (so the gizmo is on it), with the cutter boxes also selected.' }));
   else root.appendChild(el('div', { class: 'note', text: 'Only boxes, walls, cylinders and spheres can be hollowed.' }));
   root.appendChild(el('div', { class: 'note', text: 'Shift+click adds or removes. The gizmo moves the last one clicked.' }));
-  root.appendChild(el('button', { style: 'width:100%;margin-top:6px', text: 'DELETE ALL', onclick: deleteSelected }));
+  root.appendChild(el('div', { class: 'row2', style: 'margin-top:6px' }, [
+    el('button', { text: 'SIT ON GROUND', title: 'End', onclick: sitOnGround }),
+    el('button', { text: 'DELETE ALL', onclick: deleteSelected }),
+  ]));
 }
 function renderObjectPanel(root, o) {
   root.appendChild(el('h3', { text: (TYPE_LABELS[o.type] || o.type).toUpperCase() }));
-  const apply = (rebuild = false) => { if (rebuild) world.rebuildObject(o.id); else world.syncTransform(o); if (o.grounded) { o.pos[1] = world.sampleHeight(o.pos[0], o.pos[2]) + (o.offset || 0); world.syncTransform(o); } gizmo.attach(world.meshes.get(o.id)); refreshSelectionBox(); pushUndo(); };
+  const apply = (rebuild = false) => { if (rebuild) world.rebuildObject(o.id); else world.syncTransform(o); if (o.grounded) { o.pos[1] = world.groundY(o) + (o.offset || 0); world.syncTransform(o); } gizmo.attach(world.meshes.get(o.id)); refreshSelectionBox(); pushUndo(); };
   root.appendChild(field('Name', el('input', { type: 'text', value: o.name || '', onchange: (e) => { o.name = e.target.value; } })));
-  if (o.type !== 'path') {
+  if (!LINE_TYPES.includes(o.type)) {
     const pos = el('div', { class: 'row3' }, [0, 1, 2].map(i => numInput(o.pos[i], (v) => { o.pos[i] = v; if (i === 1) o.grounded = false; apply(); })));
     root.appendChild(field('Position', pos));
     root.appendChild(field('Rotation °', numInput(THREE.MathUtils.radToDeg(o.rot || 0), (v) => { o.rot = THREE.MathUtils.degToRad(v); apply(); }, 5)));
@@ -563,7 +614,10 @@ function renderObjectPanel(root, o) {
       const sc = el('div', { class: 'row3' }, [0, 1, 2].map(i => numInput(o.scale[i], (v) => { o.scale[i] = Math.max(0.05, v); apply(); })));
       root.appendChild(field(o.type === 'door' ? 'W / H / thick' : 'Size', sc));
     }
-    root.appendChild(field('Snap to ground', el('input', { type: 'checkbox', ...(o.grounded ? { checked: '' } : {}), onchange: (e) => { o.grounded = e.target.checked; apply(o.type === 'light'); } })));
+    root.appendChild(field('Snap to ground', el('div', { class: 'row2', style: 'grid-template-columns:auto 1fr;align-items:center' }, [
+      el('input', { type: 'checkbox', ...(o.grounded ? { checked: '' } : {}), onchange: (e) => { o.grounded = e.target.checked; apply(o.type === 'light'); } }),
+      el('button', { text: 'SIT ON GROUND', title: 'End — sit on the highest ground under it', onclick: sitOnGround }),
+    ])));
     root.appendChild(el('div', { class: 'note', text: 'Drag the green gizmo arrow or press PgUp / PgDn (Shift = 1 m) to lift it into the air — that unticks snap. R / Shift+R rotate 15°, , and . rotate 90°. Hold Shift while dragging to snap.' }));
   }
   if (o.color !== undefined) root.appendChild(field('Color', el('input', { type: 'color', value: o.color, oninput: (e) => { o.color = e.target.value; }, onchange: () => apply(true) })));
@@ -593,6 +647,10 @@ function renderObjectPanel(root, o) {
     root.appendChild(field('Bars', el('input', { type: 'checkbox', ...(o.bars ? { checked: '' } : {}), onchange: (e) => { o.bars = e.target.checked; apply(true); } })));
     root.appendChild(field('Locked', el('input', { type: 'checkbox', ...(o.locked ? { checked: '' } : {}), onchange: (e) => { o.locked = e.target.checked; pushUndo(); } })));
     root.appendChild(field('Key name', el('input', { type: 'text', value: o.keyName || '', onchange: (e) => { o.keyName = e.target.value; } })));
+    const sw = el('select', { onchange: (e) => { o.swing = e.target.value; pushUndo(); } });
+    for (const [v, l] of [['auto', 'Away from whoever opens it'], ['in', 'Always inward (−z side)'], ['out', 'Always outward (+z side)']]) sw.appendChild(el('option', { value: v, text: l, ...((o.swing || 'auto') === v ? { selected: '' } : {}) }));
+    root.appendChild(field('Swing', sw));
+    root.appendChild(el('div', { class: 'note', text: o.attachedTo ? 'Placed on a hollow: its doorway is cut and it opens inward. Moving the door does not move the doorway — Shift+click the hollow and CARVE again.' : 'Click a hollow\'s wall with the Door tool to set the door into it and cut the doorway automatically.' }));
   }
   if (o.type === 'light') {
     root.appendChild(range('Intensity', o.intensity, 0, 120, 1, (v) => { o.intensity = v; world.rebuildObject(o.id); gizmo.attach(world.meshes.get(o.id)); }));
@@ -604,6 +662,15 @@ function renderObjectPanel(root, o) {
   }
   if (o.type === 'path') {
     root.appendChild(range('Width', o.width, 0.5, 12, 0.25, (v) => { o.width = v; world.rebuildObject(o.id); refreshSelectionBox(); }, (v) => v + ' m'));
+    root.appendChild(field('Smooth corners', el('input', { type: 'checkbox', ...(o.smooth !== false ? { checked: '' } : {}), onchange: (e) => { o.smooth = e.target.checked; apply(true); } })));
+    root.appendChild(el('div', { class: 'note', text: `${o.points.length} points. Delete and redraw to change the route.` }));
+  }
+  if (o.type === 'fence') {
+    root.appendChild(range('Height', o.height, 0.5, 6, 0.1, (v) => { o.height = v; world.rebuildObject(o.id); refreshSelectionBox(); }, (v) => v.toFixed(1) + ' m'));
+    root.appendChild(range('Post spacing', o.spacing, 1, 8, 0.5, (v) => { o.spacing = v; world.rebuildObject(o.id); }, (v) => v + ' m'));
+    const st = el('select', { onchange: (e) => { o.style = e.target.value; apply(true); } });
+    for (const [v, l] of [['chainlink', 'Chain-link'], ['rails', 'Rails']]) st.appendChild(el('option', { value: v, text: l, ...(o.style === v ? { selected: '' } : {}) }));
+    root.appendChild(field('Style', st));
     root.appendChild(el('div', { class: 'note', text: `${o.points.length} points. Delete and redraw to change the route.` }));
   }
   const actions = el('div', { class: 'row2', style: 'margin-top:10px' }, [
@@ -614,9 +681,10 @@ function renderObjectPanel(root, o) {
 }
 function updateHint() {
   const h = {
-    select: 'Click to select · Shift+click multi-select · G hollow · 1/2/3 move/rotate/scale · R , . rotate · PgUp/PgDn lift · Del · Ctrl+D duplicate · F frame · Ctrl+Z undo · P play',
+    select: 'Click to select · Shift+click multi-select · G hollow · End sit on ground · 1/2/3 move/rotate/scale · R , . rotate · PgUp/PgDn lift · Del · Ctrl+D duplicate · F frame · Ctrl+Z undo · P play',
     terrain: 'Click-drag to sculpt · [ ] brush size · release to re-snap objects',
     path: 'Click points · double-click / Enter to finish · Esc cancel',
+    fence: 'Click corner points · double-click / Enter to finish · Esc cancel',
     treebrush: 'Click-drag to scatter trees · [ ] brush size',
     spawn: 'Click the ground to place the spawn point',
   }[ed.tool] || 'Click the ground or any object to place it there · R / Shift+R , . rotate the preview · Esc back to select';
@@ -744,7 +812,11 @@ function tryInteract() {
   const o = focused;
   if (o.type === 'door') {
     if (o.locked) { if (player.inventory.includes(o.keyName)) { o.locked = false; o._unlockedInPlay = true; message(`Unlocked with the ${o.keyName}.`); } else { message(`Locked. You need the ${o.keyName}.`); return; } }
-    const d = world.doorState(o.id); world.setDoor(o.id, !d.open);
+    const d = world.doorState(o.id);
+    let dir = 1;   // +1 swings towards the door's local -z
+    if (o.swing === 'out') dir = -1;
+    else if (o.swing !== 'in') { const r = o.rot || 0, dx = player.pos.x - o.pos[0], dz = player.pos.z - o.pos[2]; dir = (dx * Math.sin(r) + dz * Math.cos(r)) > 0 ? 1 : -1; }   // away from the player
+    world.setDoor(o.id, !d.open, dir);
   } else if (o.type === 'light') { if (o._wasOn === undefined) o._wasOn = o.on; world.setLight(o.id, !o.on); }
   else if (o.interact === 'pickup') { player.inventory.push(o.name || 'item'); renderInventory(); message(`Picked up ${o.name || 'item'}.`); o._hidden = true; world.removeObject(o.id, false); }
   else if (o.interact === 'switch') { const ls = world.data.objects.filter(l => l.type === 'light' && (l.group || '') === (o.group || '')); const on = !ls.some(l => l.on); for (const l of ls) { if (l._wasOn === undefined) l._wasOn = l.on; world.setLight(l.id, on); } message(ls.length ? `Lights ${on ? 'on' : 'off'}.` : 'Click. Nothing is wired to this switch.'); }
