@@ -105,13 +105,6 @@ light(-55, -50, 5); light(-36, 112, 5); light(55, 76, 5); light(45, -128, 5); li
 
 // ---------------------------------------------------------------- 19  terrain + forest outside the wall
 const SIZE = 600, SEG = 200, N = SEG + 1, step = SIZE / SEG;
-const noise = (x, z) => Math.sin(x * 0.031) * Math.cos(z * 0.027) + 0.5 * Math.sin(x * 0.073 + 1.3) * Math.sin(z * 0.061 + 0.4);
-const heights = new Array(N * N);
-for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-  const x = -SIZE / 2 + i * step, z = -SIZE / 2 + j * step, r = Math.hypot(x - 10, z - 10);
-  const t = Math.min(1, Math.max(0, (r - 235) / 70)), hill = t * t * (3 - 2 * t);
-  heights[j * N + i] = Math.round(hill * (18 + 8 * noise(x, z)) * 100) / 100;
-}
 // point-in-polygon (ray cast) for the wall outline, grown by a margin
 const inside = (x, z, grow = 1) => {
   const P = W.map(([px, pz]) => [10 + (px - 10) * grow, -20 + (pz + 20) * grow]);
@@ -119,6 +112,28 @@ const inside = (x, z, grow = 1) => {
   for (let i = 0, j = P.length - 1; i < P.length; j = i++) { const [xi, zi] = P[i], [xj, zj] = P[j]; if ((zi > z) !== (zj > z) && x < (xj - xi) * (z - zi) / (zj - zi) + xi) c = !c; }
   return c;
 };
+const noise = (x, z) => Math.sin(x * 0.031) * Math.cos(z * 0.027) + 0.5 * Math.sin(x * 0.073 + 1.3) * Math.sin(z * 0.061 + 0.4) + 0.25 * Math.sin(x * 0.17 + z * 0.11);
+// how far a point is outside the wall polygon (0 inside)
+const distOutside = (x, z) => {
+  let best = Infinity;
+  for (let i = 0, j = W.length - 1; i < W.length; j = i++) {
+    const [ax, az] = W[j], [bx, bz] = W[i], dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz;
+    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / L2));
+    best = Math.min(best, Math.hypot(x - (ax + t * dx), z - (az + t * dz)));
+  }
+  return inside(x, z) ? 0 : best;
+};
+const smooth = (a, b, v) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
+const heights = new Array(N * N);
+for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+  const x = -SIZE / 2 + i * step, z = -SIZE / 2 + j * step, d = distOutside(x, z);
+  // flat strip 12 m outside the wall, then the ground rolls up into hills; big hills further out
+  const near = smooth(12, 60, d), far = smooth(60, 160, d);
+  let h = near * (10 + 6 * noise(x, z)) + far * (30 + 14 * noise(x * 0.7 + 40, z * 0.7 - 25));
+  const road = smooth(18, 4, Math.abs(x)) * smooth(120, 150, z) + smooth(215, 180, z) * smooth(160, 230, z) * smooth(85, 60, Math.abs(x));   // entrance road + loop stay level
+  h *= 1 - Math.min(1, road);
+  heights[j * N + i] = Math.round(Math.max(0, h) * 100) / 100;
+}
 let seed = 7; const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
 const trees = [];
 for (let tries = 0; tries < 20000 && trees.length < 900; tries++) {
