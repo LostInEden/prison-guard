@@ -17,6 +17,7 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.1;
+renderer.localClippingEnabled = true;   // hollows clip their roofs off in the cutaway view
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -174,6 +175,7 @@ function hitWorld(e, includeObjects = true) {
     if (o?.userData.spawn) return { point: h.point, spawn: true };
     if (o?.userData.id) {
       const obj = world.getObject(o.userData.id); if (obj?.type === 'path') continue;
+      if (obj?.type === 'hollow' && world.hideRoofs && h.point.y > o.userData.roofCut) continue;   // clicks pass through the cut-away roof
       const normal = h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld) : null;
       return { point: h.point, object: obj, normal };
     }
@@ -184,8 +186,7 @@ function hitWorld(e, includeObjects = true) {
 // ---- ghost preview
 function buildGhost() {
   ghost.clear();
-  const placeTypes = ['box', 'wall', 'ramp', 'cylinder', 'sphere', 'door', 'light', 'tree'];
-  if (!placeTypes.includes(ed.tool)) return;
+  if (!isPlaceTool()) return;
   const tmp = new World(new THREE.Scene());
   const o = { id: 'ghost', type: ed.tool, pos: [0, 0, 0], rot: 0, ...structuredClone(DEFAULTS[ed.tool]) };
   const g = tmp.buildObject(o);
@@ -238,7 +239,7 @@ canvas.addEventListener('pointerdown', (e) => {
     }
     default: {
       if (!isPlaceTool() || !hit) break;
-      placeObject(ed.tool, hit);
+      placeObject(ed.tool, hit, e);
     }
   }
 });
@@ -281,37 +282,56 @@ window.addEventListener('pointerup', () => {
 canvas.addEventListener('dblclick', () => { if (ed.mode === 'edit' && LINE_TYPES.includes(ed.tool)) finishPath(); });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
-const isPlaceTool = () => ['box', 'wall', 'ramp', 'cylinder', 'sphere', 'door', 'light', 'tree'].includes(ed.tool);
+const isPlaceTool = () => ['box', 'wall', 'ramp', 'cylinder', 'sphere', 'doorway', 'door', 'light', 'tree'].includes(ed.tool);
 
-function placeObject(type, hit) {
+function placeObject(type, hit, e) {
   pushUndo();
+  if (type === 'doorway') { const d = placeDoorway(hit); if (d) { ed.tool = 'select'; setTool('select'); select(d); } else ed.undo.pop(); return; }
   const def = { type, pos: [hit.point.x, hit.point.y, hit.point.z] };
   if (hit.terrain) def.grounded = true; else def.grounded = false;
   if (type === 'light') { def.grounded = hit.terrain; def.pos[1] = hit.point.y + (hit.terrain ? DEFAULTS.light.offset : 0.3); }
   if (type === 'tree') def.scale = [0.8 + Math.random() * 0.8, 0.8 + Math.random() * 0.8, 0.8 + Math.random() * 0.8];
   def.rot = placeRot();   // doors/walls square to the view, plus whatever you dialled in with R / , / .
-  const attached = type === 'door' && hit.object?.type === 'hollow' && attachDoorToHollow(def, hit);
+  if (e?.shiftKey) { def.pos[0] = Math.round(def.pos[0] * 2) / 2; def.pos[2] = Math.round(def.pos[2] * 2) / 2; }   // Shift: 0.5 m grid
+  let note = null;
+  if (type === 'door' && hit.object?.type === 'doorway') note = fitDoorToDoorway(def, hit);
+  else if (type === 'wall' && hit.object?.type === 'hollow' && hit.normal?.y > 0.7) {   // a wall on a hollow's floor: floor-to-ceiling
+    const inside = world.hollowInteriorAt(hit.object, hit.point.x, hit.point.z);
+    if (inside) { def.scale = [DEFAULTS.wall.scale[0], Math.max(0.5, inside.ceiling - hit.point.y), DEFAULTS.wall.scale[2]]; def.pos[1] = inside.floor; note = 'Wall sized floor to ceiling'; }
+  }
   const o = world.addObject(def);
   if (o.grounded) { o.pos[1] = world.groundY(o) + (o.offset || 0); world.syncTransform(o); }
   ed.tool = 'select'; setTool('select'); select(o);
-  if (attached) toast('Doorway cut — the door opens inward');
+  if (note) toast(note);
 }
-// a door clicked onto a hollow's wall: sit it flush in the wall on the floor, cut the doorway, swing inward
-function attachDoorToHollow(def, hit) {
-  const h = hit.object, n = hit.normal?.clone(); if (!n) return false;
-  n.y = 0; if (n.lengthSq() < 0.3) return false;   // roof / floor — not a wall
+// Doorway tool: an opening through the wall that was clicked. A solid shape gets hollowed first.
+function placeDoorway(hit) {
+  let h = hit.object;
+  if (!h || !hit.normal) { toast('Click the wall of a building'); return null; }
+  if (h.type !== 'hollow') {
+    if (!HOLLOW_TYPES.includes(h.type)) { toast('Doorways go on boxes, walls, cylinders, spheres or hollows'); return null; }
+    h = hollowObjects([h]); toast('Hollowed it out');
+  }
+  const n = hit.normal.clone(); n.y = 0;
+  if (n.lengthSq() < 0.3) { toast('Click the side of a wall, not the roof or floor'); return null; }
   n.normalize();
-  const rot = Math.atan2(n.x, n.z);                    // door's local +z faces outward along n
-  const ux = n.z, uz = -n.x;                           // door's local +x (hinge -> latch) runs along the wall
-  const [w, hgt] = DEFAULTS.door.scale, t = h.thickness;
-  const cx = hit.point.x - n.x * t / 2, cz = hit.point.z - n.z * t / 2;   // middle of the wall
-  const floor = world.hollowFloorAt(h, cx - n.x * t, cz - n.z * t) ?? world.hollowFloorAt(h, cx, cz) ?? (h.pos[1] + t);
-  def.pos = [cx - ux * w / 2, floor, cz - uz * w / 2]; def.rot = rot; def.grounded = false; def.swing = 'in'; def.attachedTo = h.id;
-  const r = h.rot || 0, c = Math.cos(r), s = Math.sin(r), dx = cx - h.pos[0], dz = cz - h.pos[2];   // world -> hollow local
-  h.cuts = h.cuts || [];
-  h.cuts.push({ type: 'box', pos: [dx * c - dz * s, floor - h.pos[1] + 0.01, dx * s + dz * c], rot: rot - r, scale: [w + 0.06, hgt + 0.04, t + 0.6] });
-  world.rebuildObject(h.id);
-  return true;
+  const t = h.thickness, cx = hit.point.x - n.x * t / 2, cz = hit.point.z - n.z * t / 2;   // middle of the wall
+  const inside = world.hollowInteriorAt(h, cx - n.x * t, cz - n.z * t) || world.hollowInteriorAt(h, cx, cz);
+  const floor = inside ? inside.floor : h.pos[1] + t;
+  const height = inside ? Math.min(DEFAULTS.doorway.scale[1], inside.ceiling - floor - 0.05) : DEFAULTS.doorway.scale[1];
+  return world.addObject({ type: 'doorway', pos: [cx, floor, cz], rot: Math.atan2(n.x, n.z), scale: [DEFAULTS.doorway.scale[0], height, t + 0.4], target: h.id, grounded: false });
+}
+// Door tool on a doorway: hang the door in the frame, hinged on the side that was clicked, opening inward
+function fitDoorToDoorway(def, hit) {
+  const d = hit.object, r = d.rot || 0, ux = Math.cos(r), uz = -Math.sin(r), [w, hgt] = d.scale;
+  const post = 0.07 * w, right = (hit.point.x - d.pos[0]) * ux + (hit.point.z - d.pos[2]) * uz > 0;   // clicked nearer the +x post?
+  const hx = (w / 2 - post) * (right ? 1 : -1);
+  def.pos = [d.pos[0] + ux * hx, d.pos[1], d.pos[2] + uz * hx];
+  def.rot = r + (right ? Math.PI : 0);           // hinge -> latch always runs across the opening
+  def.scale = [w - 2 * post, hgt - 0.02, 0.08];
+  def.swing = right ? 'out' : 'in';              // both mean "into the building" once the rotation flips
+  def.grounded = false; def.inDoorway = d.id;
+  return `Door hung on the ${right ? 'right' : 'left'} — opens inward`;
 }
 // sit every selected object on the highest ground under its footprint (never sinks in), and keep it snapped
 function sitOnGround() {
@@ -391,6 +411,8 @@ window.addEventListener('keydown', (e) => {
     case 'KeyF': if (selected) focusOn(world.meshes.get(selected.id).position); break;
     case 'KeyP': startPlay(false); break;
     case 'KeyG': if (selected) hollowSelection(); break;
+    case 'KeyO': setTool('doorway'); break;
+    case 'KeyX': world.setHideRoofs(!world.hideRoofs); renderPanel(); toast(world.hideRoofs ? 'Roofs hidden' : 'Roofs shown'); break;
     case 'BracketLeft': adjustBrush(-1); break;
     case 'BracketRight': adjustBrush(1); break;
   }
@@ -412,33 +434,35 @@ function liftBy(m) {
 }
 function adjustBrush(d) { const b = ed.tool === 'treebrush' ? ed.treeBrush : ed.brush; b.radius = clamp(b.radius + d * 1.5, 1, 60); renderPanel(); }
 function focusOn(p) { const off = editCam.position.clone().sub(orbit.target); orbit.target.copy(p); editCam.position.copy(p).add(off.setLength(Math.min(off.length(), 25))); }
-function deleteSelected() { pushUndo(); for (const o of selectedObjects()) world.removeObject(o.id); select(null); }
+function deleteSelected() {
+  pushUndo();
+  const objs = selectedObjects();
+  for (const o of objs) if (o.type === 'hollow') for (const d of world.data.objects.filter(d => d.type === 'doorway' && d.target === o.id)) world.removeObject(d.id);   // doorways go with their building
+  for (const o of objs) world.removeObject(o.id);
+  select(null);
+}
 
-// ---- hollow: turn the selected shapes into one shell you can walk into
+// ---- hollow: turn shapes into one shell you can walk into
+function hollowObjects(items) {
+  const cx = items.reduce((a, o) => a + o.pos[0], 0) / items.length, cz = items.reduce((a, o) => a + o.pos[2], 0) / items.length, cy = Math.min(...items.map(o => o.pos[1]));
+  const parts = items.map(o => ({ type: o.type, pos: [o.pos[0] - cx, o.pos[1] - cy, o.pos[2] - cz], rot: o.rot || 0, scale: [...o.scale], half: !!o.half }));
+  for (const o of items) world.removeObject(o.id);
+  return world.addObject({ type: 'hollow', pos: [cx, cy, cz], rot: 0, parts, cuts: [], color: items[0].color, name: items[0].name || '', grounded: items.length === 1 && items[0].grounded });
+}
 function hollowSelection() {
   const items = selectedObjects().filter(o => HOLLOW_TYPES.includes(o.type));
   if (!items.length) { toast('Select boxes, walls, cylinders or spheres first'); return; }
   pushUndo();
-  const cx = items.reduce((a, o) => a + o.pos[0], 0) / items.length, cz = items.reduce((a, o) => a + o.pos[2], 0) / items.length, cy = Math.min(...items.map(o => o.pos[1]));
-  const parts = items.map(o => ({ type: o.type, pos: [o.pos[0] - cx, o.pos[1] - cy, o.pos[2] - cz], rot: o.rot || 0, scale: [...o.scale], half: !!o.half }));
-  for (const o of items) world.removeObject(o.id);
-  const h = world.addObject({ type: 'hollow', pos: [cx, cy, cz], rot: 0, parts, cuts: [], color: items[0].color, name: items[0].name || '' });
+  const h = hollowObjects(items);
   select(h); toast(`Hollowed ${items.length} piece${items.length > 1 ? 's' : ''}`);
 }
 // subtract the selected boxes from the selected hollow (doorways, windows)
 function carveSelection() {
-  const objs = selectedObjects(), hollow = objs.find(o => o.type === 'hollow'), boxes = objs.filter(o => o.type === 'box' || o.type === 'wall' || o.type === 'door');
-  if (!hollow || !boxes.length) { toast('Select a hollow and at least one box or door'); return; }
+  const objs = selectedObjects(), hollow = objs.find(o => o.type === 'hollow'), boxes = objs.filter(o => o.type === 'box' || o.type === 'wall');
+  if (!hollow || !boxes.length) { toast('Select a hollow and at least one box'); return; }
   pushUndo();
   const r = hollow.rot || 0, c = Math.cos(r), s = Math.sin(r);
   for (const b of boxes) {
-    if (b.type === 'door') {   // a door stays; its doorway (centred on the leaf, through the wall) is cut
-      const br = b.rot || 0, ux = Math.cos(br), uz = -Math.sin(br), w = b.scale[0];
-      const mx = b.pos[0] + ux * w / 2, mz = b.pos[2] + uz * w / 2, dx = mx - hollow.pos[0], dz = mz - hollow.pos[2];
-      hollow.cuts.push({ type: 'box', pos: [dx * c - dz * s, b.pos[1] - hollow.pos[1] + 0.01, dx * s + dz * c], rot: br - r, scale: [w + 0.06, b.scale[1] + 0.04, hollow.thickness + 0.6] });
-      b.attachedTo = hollow.id; if (b.swing === 'auto') b.swing = 'in';
-      continue;
-    }
     const dx = b.pos[0] - hollow.pos[0], dz = b.pos[2] - hollow.pos[2];   // world -> hollow local
     hollow.cuts.push({ type: 'box', pos: [dx * c - dz * s, b.pos[1] - hollow.pos[1], dx * s + dz * c], rot: (b.rot || 0) - r, scale: [...b.scale] });
     world.removeObject(b.id);
@@ -568,6 +592,8 @@ function renderPanel() {
   const sec = el('div', { class: 'sec' }, [el('h3', { text: 'WORLD' })]);
   sec.appendChild(range('Time of day', s.time, 0, 1, 0.01, (v) => { s.time = v; applyTime(v); }, (v) => v < 0.15 ? 'night' : v < 0.5 ? 'dusk' : 'day'));
   sec.appendChild(range('Fog', s.fog, 0, 0.03, 0.0005, (v) => { s.fog = v; scene.fog.density = v; }, (v) => v.toFixed(4)));
+  sec.appendChild(field('Hide roofs', el('input', { type: 'checkbox', ...(world.hideRoofs ? { checked: '' } : {}), onchange: (e) => { world.setHideRoofs(e.target.checked); } })));
+  sec.appendChild(el('div', { class: 'note', text: 'X — cutaway view: roofs of hollow buildings are sliced off so you can see and build inside. Clicks go through to the floor.' }));
   sec.appendChild(field('No sinking', el('input', { type: 'checkbox', ...(s.groundMode === 'highest' ? { checked: '' } : {}), onchange: (e) => { pushUndo(); s.groundMode = e.target.checked ? 'highest' : 'center'; world.groundAll(); refreshSelectionBox(); toast(e.target.checked ? 'Objects sit on the highest ground under them' : 'Objects snap at their centre'); } })));
   sec.appendChild(el('div', { class: 'note', text: 'No sinking: anything snapped to the ground sits on the highest terrain under its whole footprint. End / SIT ON GROUND does that for the selection right now.' }));
   {
@@ -602,7 +628,15 @@ function renderMultiPanel(root) {
   ]));
 }
 function renderObjectPanel(root, o) {
-  root.appendChild(el('h3', { text: (TYPE_LABELS[o.type] || o.type).toUpperCase() }));
+  const title = o.type === 'hollow' && o.parts.length === 1 ? `${TYPE_LABELS[o.parts[0].type] || 'shape'} · hollow` : (TYPE_LABELS[o.type] || o.type);
+  root.appendChild(el('h3', { text: title.toUpperCase() }));
+  if (HOLLOW_TYPES.includes(o.type) || o.type === 'hollow') {
+    const isH = o.type === 'hollow';
+    root.appendChild(field('Hollow', el('input', { type: 'checkbox', ...(isH ? { checked: '' } : {}), onchange: (e) => {
+      if (e.target.checked) { pushUndo(); select(hollowObjects([o])); toast('Hollowed — walk in through a doorway (O)'); }
+      else splitHollow(o);
+    } })));
+  }
   const apply = (rebuild = false) => { if (rebuild) world.rebuildObject(o.id); else world.syncTransform(o); if (o.grounded) { o.pos[1] = world.groundY(o) + (o.offset || 0); world.syncTransform(o); } gizmo.attach(world.meshes.get(o.id)); refreshSelectionBox(); pushUndo(); };
   root.appendChild(field('Name', el('input', { type: 'text', value: o.name || '', onchange: (e) => { o.name = e.target.value; } })));
   if (!LINE_TYPES.includes(o.type)) {
@@ -612,7 +646,7 @@ function renderObjectPanel(root, o) {
     root.appendChild(field('', el('div', { class: 'row2', style: 'grid-template-columns:1fr 1fr 1fr 1fr' }, [[-90, '↺ 90'], [-15, '↺ 15'], [15, '↻ 15'], [90, '↻ 90']].map(([d, t]) => el('button', { text: t, title: `Rotate ${d}°`, onclick: () => rotateBy(d) })))));
     if (o.scale && o.type !== 'light') {
       const sc = el('div', { class: 'row3' }, [0, 1, 2].map(i => numInput(o.scale[i], (v) => { o.scale[i] = Math.max(0.05, v); apply(); })));
-      root.appendChild(field(o.type === 'door' ? 'W / H / thick' : 'Size', sc));
+      root.appendChild(field(o.type === 'door' ? 'W / H / thick' : o.type === 'doorway' ? 'W / H / depth' : 'Size', sc));
     }
     root.appendChild(field('Snap to ground', el('div', { class: 'row2', style: 'grid-template-columns:auto 1fr;align-items:center' }, [
       el('input', { type: 'checkbox', ...(o.grounded ? { checked: '' } : {}), onchange: (e) => { o.grounded = e.target.checked; apply(o.type === 'light'); } }),
@@ -634,14 +668,16 @@ function renderObjectPanel(root, o) {
     root.appendChild(field('Half', el('input', { type: 'checkbox', ...(o.half ? { checked: '' } : {}), onchange: (e) => { o.half = e.target.checked; apply(true); } })));
     if (o.half) root.appendChild(el('div', { class: 'note', text: 'Half cylinder: the flat side sits on the object\'s origin and the curve bulges out the back. Size is that of the full cylinder it was cut from.' }));
   }
-  if (HOLLOW_TYPES.includes(o.type)) {
-    root.appendChild(el('button', { style: 'width:100%;margin-top:6px', text: 'HOLLOW  (G)', onclick: hollowSelection }));
-    root.appendChild(el('div', { class: 'note', text: 'Turns it into a room you can walk into. Shift+click more shapes first to hollow them as one building.' }));
-  }
+  if (HOLLOW_TYPES.includes(o.type)) root.appendChild(el('div', { class: 'note', text: 'Tick Hollow to turn it into a room. Shift+click more shapes and press G to hollow them as one building.' }));
   if (o.type === 'hollow') {
     root.appendChild(field('Wall thick.', numInput(o.thickness, (v) => { o.thickness = clamp(v, 0.05, 3); apply(true); }, 0.05)));
-    root.appendChild(el('div', { class: 'note', text: `${o.parts.length} part${o.parts.length === 1 ? '' : 's'}, ${(o.cuts || []).length} opening${(o.cuts || []).length === 1 ? '' : 's'}. To cut a doorway: place a box through the wall, Shift+click this hollow, then CARVE.` }));
-    root.appendChild(el('button', { style: 'width:100%;margin-top:6px', text: 'SPLIT APART', onclick: () => splitHollow(o) }));
+    const nDoors = world.data.objects.filter(d => d.type === 'doorway' && d.target === o.id).length, nCuts = (o.cuts || []).length;
+    root.appendChild(el('div', { class: 'note', text: `${o.parts.length} part${o.parts.length === 1 ? '' : 's'} · ${nDoors} doorway${nDoors === 1 ? '' : 's'} · ${nCuts} carved opening${nCuts === 1 ? '' : 's'}. Doorway tool (O): click a wall. Windows: place a box through the wall, Shift+click this, CARVE. X hides roofs so you can build inside; walls placed on the floor size themselves floor-to-ceiling.` }));
+    if (o.parts.length > 1) root.appendChild(el('button', { style: 'width:100%;margin-top:6px', text: 'SPLIT APART', onclick: () => splitHollow(o) }));
+  }
+  if (o.type === 'doorway') {
+    const t = world.getObject(o.target);
+    root.appendChild(el('div', { class: 'note', text: t ? `Opening in "${t.name || 'hollow'}". Move, turn or resize it and the hole follows; delete it and the wall heals. Door tool: click inside the frame (left or right half picks the hinge side) to hang a door.` : 'Not linked to a building — it does nothing on its own.' }));
   }
   if (o.type === 'door') {
     root.appendChild(field('Bars', el('input', { type: 'checkbox', ...(o.bars ? { checked: '' } : {}), onchange: (e) => { o.bars = e.target.checked; apply(true); } })));
@@ -650,7 +686,7 @@ function renderObjectPanel(root, o) {
     const sw = el('select', { onchange: (e) => { o.swing = e.target.value; pushUndo(); } });
     for (const [v, l] of [['auto', 'Away from whoever opens it'], ['in', 'Always inward (−z side)'], ['out', 'Always outward (+z side)']]) sw.appendChild(el('option', { value: v, text: l, ...((o.swing || 'auto') === v ? { selected: '' } : {}) }));
     root.appendChild(field('Swing', sw));
-    root.appendChild(el('div', { class: 'note', text: o.attachedTo ? 'Placed on a hollow: its doorway is cut and it opens inward. Moving the door does not move the doorway — Shift+click the hollow and CARVE again.' : 'Click a hollow\'s wall with the Door tool to set the door into it and cut the doorway automatically.' }));
+    root.appendChild(el('div', { class: 'note', text: o.inDoorway ? 'Hung in a doorway. Its origin is the hinge; the leaf swings from there.' : 'To put a door in a building: Doorway tool (O) on the wall first, then click inside the frame with the Door tool.' }));
   }
   if (o.type === 'light') {
     root.appendChild(range('Intensity', o.intensity, 0, 120, 1, (v) => { o.intensity = v; world.rebuildObject(o.id); gizmo.attach(world.meshes.get(o.id)); }));
@@ -687,7 +723,9 @@ function updateHint() {
     fence: 'Click corner points · double-click / Enter to finish · Esc cancel',
     treebrush: 'Click-drag to scatter trees · [ ] brush size',
     spawn: 'Click the ground to place the spawn point',
-  }[ed.tool] || 'Click the ground or any object to place it there · R / Shift+R , . rotate the preview · Esc back to select';
+    doorway: 'Click the wall of a building (a solid box gets hollowed first) · Esc back to select',
+    door: 'Click inside a doorway to hang the door (left/right half = hinge side) · or anywhere to place a free door · R , . rotate',
+  }[ed.tool] || 'Click the ground or any object to place it there · Shift snaps to 0.5 m · R / Shift+R , . rotate the preview · Esc back to select';
   $('hint').textContent = h + '  ·  drag a yellow edge handle to resize the map  ·  right-drag orbit · middle-drag pan · wheel zoom · WASD E/C fly';
 }
 
@@ -794,6 +832,7 @@ function findFocus() {
     if (h.object === world.terrain) return null;
     let o = h.object; while (o && !o.userData.id) o = o.parent;
     const obj = o && world.getObject(o.userData.id); if (!obj) continue;
+    if (obj.type === 'doorway') continue;   // its invisible click box must not hide the door hung in it
     if (obj.type === 'door' || obj.type === 'light' || (obj.interact && obj.interact !== 'none')) return obj;
     return null;   // something solid but inert is in the way
   }
@@ -848,6 +887,7 @@ const clock = new THREE.Clock();
 function animate() { requestAnimationFrame(animate); frame(); }
 function frame() {
   const dt = Math.min(clock.getDelta(), 0.05);
+  if (!gizmo.dragging) world.flushDirty();   // re-cut hollows whose doorways moved (after the drag, not during)
   world.updateDoors(dt);
   if (ed.mode === 'play') {
     updatePlayer(dt);

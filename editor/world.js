@@ -7,6 +7,9 @@ export const DEFAULTS = {
   cylinder: { scale: [1, 2, 1],     color: '#6e7480', solid: true,  grounded: true, interact: 'none', group: '', text: '', half: false },
   // a shell built from several shapes: union(parts) minus the same parts shrunk by `thickness`, minus any `cuts`
   hollow:   { color: '#8d918c', thickness: 0.3, parts: [], cuts: [], solid: true, grounded: false },
+  // an opening through a hollow's wall, linked to it by `target`; origin = centre of the opening at floor level,
+  // local x along the wall, local +z facing out. scale = [width, height, depth through the wall]
+  doorway:  { scale: [1.2, 2.2, 0.7], color: '#5b6068', target: null, grounded: false },
   sphere:   { scale: [1, 1, 1],     color: '#c0a060', solid: true,  grounded: true, interact: 'none', group: '', text: '' },
   wall:     { scale: [4, 3, 0.3],   color: '#9a9d97', solid: true,  grounded: true, interact: 'none', group: '', text: '' },
   ramp:     { scale: [3, 1, 4],     color: '#7a7d78', solid: false, grounded: true },
@@ -17,7 +20,7 @@ export const DEFAULTS = {
   path:     { width: 3, color: '#2b2d30', points: [], smooth: true },
   fence:    { points: [], height: 2.2, spacing: 3, style: 'chainlink', color: '#9aa1a8', solid: true },
 };
-export const TYPE_LABELS = { box: 'Box', cylinder: 'Cylinder', sphere: 'Sphere', wall: 'Wall', ramp: 'Ramp', door: 'Door', tree: 'Tree', light: 'Light', path: 'Path', hollow: 'Hollow', fence: 'Fence' };
+export const TYPE_LABELS = { box: 'Box', cylinder: 'Cylinder', sphere: 'Sphere', wall: 'Wall', ramp: 'Ramp', door: 'Door', tree: 'Tree', light: 'Light', path: 'Path', hollow: 'Hollow', fence: 'Fence', doorway: 'Doorway' };
 export const LINE_TYPES = ['path', 'fence'];   // drawn as a chain of points, not placed
 export const HOLLOW_TYPES = ['box', 'wall', 'cylinder', 'sphere'];   // shapes that can be hollowed together
 
@@ -185,6 +188,8 @@ export class World {
     this.scene = scene;
     this.group = new THREE.Group(); scene.add(this.group);
     this.meshes = new Map();       // id -> Group
+    this.dirty = new Set();        // hollow ids whose doorways changed; rebuilt by flushDirty()
+    this.hideRoofs = false;        // editor cutaway view: clip the roofs off hollows
     this.data = emptyWorld();
     this.buildTerrain();
     this.spawnMarker = this.makeSpawnMarker();
@@ -268,8 +273,33 @@ export class World {
     if (!this.data.settings) this.data.settings = { time: 0.1, fog: 0.006 };
     if (!this.data.settings.groundMode) this.data.settings.groundMode = 'center';   // older worlds keep their placement
     this.buildTerrain();
-    for (const o of this.data.objects) this.buildObject(o);
+    for (const o of this.data.objects) if (o.type !== 'hollow') this.buildObject(o);
+    for (const o of this.data.objects) if (o.type === 'hollow') this.buildObject(o);   // after doorways, so each hollow builds once
+    this.dirty.clear();
     this.updateSpawnMarker();
+  }
+  // rebuild hollows whose doorways moved (call once per frame, not while a gizmo drag is in progress)
+  flushDirty() {
+    if (!this.dirty.size) return;
+    const ids = [...this.dirty]; this.dirty.clear();
+    for (const id of ids) if (this.getObject(id)) this.rebuildObject(id);
+  }
+  setHideRoofs(on) { this.hideRoofs = on; for (const o of this.data.objects) if (o.type === 'hollow') this.updateRoofClip(o); }
+  updateRoofClip(o) {
+    const g = this.meshes.get(o.id), pl = g?.userData.roofPlane; if (!pl) return;
+    const top = Math.max(...o.parts.map(p => p.pos[1] + p.scale[1]));
+    pl.constant = this.hideRoofs ? o.pos[1] + top - o.thickness - 0.02 : 1e9;
+    g.userData.roofCut = pl.constant;
+  }
+  // the cut boxes (hollow-local) made by doorways linked to this hollow
+  doorwayCuts(o) {
+    const r = o.rot || 0, c = Math.cos(r), s = Math.sin(r), out = [];
+    for (const d of this.data.objects) {
+      if (d.type !== 'doorway' || d.target !== o.id) continue;
+      const dx = d.pos[0] - o.pos[0], dz = d.pos[2] - o.pos[2];
+      out.push({ type: 'box', pos: [dx * c - dz * s, d.pos[1] - o.pos[1] + 0.01, dx * s + dz * c], rot: (d.rot || 0) - r, scale: [...d.scale] });
+    }
+    return out;
   }
 
   // ---------- objects
@@ -281,6 +311,7 @@ export class World {
   }
   getObject(id) { return this.data.objects.find(o => o.id === id); }
   removeObject(id, fromData = true) {
+    const o = this.getObject(id); if (o?.type === 'doorway' && o.target) this.dirty.add(o.target);   // the wall heals
     const g = this.meshes.get(id);
     if (g) { this.group.remove(g); g.traverse(m => { m.geometry?.dispose?.(); }); this.meshes.delete(id); }
     if (fromData) this.data.objects = this.data.objects.filter(o => o.id !== id);
@@ -311,19 +342,25 @@ export class World {
     else h = this.sampleHeight(x, z);
     return h;
   }
-  // floor height inside a hollow at a world point, or null if the point is not over any part
-  hollowFloorAt(o, x, z) {
+  // the inside of a hollow at a world point: { floor, ceiling } of the (lowest) part over it, or null
+  hollowInteriorAt(o, x, z) {
     const H = this.meshes.get(o.id)?.userData.hollow; if (!H) return null;
     const c = Math.cos(o.rot || 0), s = Math.sin(o.rot || 0), dx = x - o.pos[0], dz = z - o.pos[2];
     const lx = dx * c - dz * s, lz = dx * s + dz * c;
     let best = null;
-    for (const q of H.parts) { _v.set(lx, 0, lz).applyMatrix4(q.inv); if (insideUnit(q.kind, _v.x, 0.5, _v.z)) { const f = o.pos[1] + q.p.pos[1] + H.t; if (best === null || f < best) best = f; } }
+    for (const q of H.parts) {
+      _v.set(lx, 0, lz).applyMatrix4(q.inv); if (!insideUnit(q.kind, _v.x, 0.5, _v.z)) continue;
+      const floor = o.pos[1] + q.p.pos[1] + H.t, ceiling = o.pos[1] + q.p.pos[1] + q.p.scale[1] - H.t;
+      if (!best || floor < best.floor) best = { floor, ceiling };
+    }
     return best;
   }
   syncTransform(o) {
     const g = this.meshes.get(o.id); if (!g) return;
     g.position.set(o.pos[0], o.pos[1], o.pos[2]); g.rotation.set(0, o.rot || 0, 0);
     if (o.scale && o.type !== 'path' && o.type !== 'light') g.scale.set(o.scale[0], o.scale[1], o.scale[2]); else g.scale.set(1, 1, 1);
+    if (o.type === 'doorway' && o.target) this.dirty.add(o.target);
+    if (o.type === 'hollow') this.updateRoofClip(o);
   }
   // read transform back from a gizmo-manipulated group.
   //   lifting — true while the user is dragging along the Y axis. A grounded object that gets lifted
@@ -367,10 +404,20 @@ export class World {
       }
       case 'cylinder': { addMesh(primitiveGeometry(o.half ? 'halfcyl' : 'cylinder').clone(), std()); break; }
       case 'hollow': {
+        const spec = { ...o, cuts: [...(o.cuts || []), ...this.doorwayCuts(o)] };   // doorways are cuts too
         let geo = null;
-        try { geo = buildHollowGeometry(o); } catch (err) { console.warn('Hollow failed to build', err); }
-        if (geo) addMesh(geo, std({ side: THREE.DoubleSide }));
-        g.userData.hollow = { t: o.thickness, segs: hollowSegments(o), parts: o.parts.map(p => ({ p, kind: partKind(p), inv: partMatrix(p).invert() })) };
+        try { geo = buildHollowGeometry(spec); } catch (err) { console.warn('Hollow failed to build', err); }
+        const plane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 1e9);   // roof cutaway (see updateRoofClip)
+        if (geo) addMesh(geo, std({ side: THREE.DoubleSide, clippingPlanes: [plane] }));
+        g.userData.roofPlane = plane;
+        g.userData.hollow = { t: o.thickness, segs: hollowSegments(spec), parts: o.parts.map(p => ({ p, kind: partKind(p), inv: partMatrix(p).invert() })) };
+        break;
+      }
+      case 'doorway': {
+        const m = std({ metalness: 0.3, roughness: 0.6 }), pw = 0.07, lh = 0.08;
+        const bar = (sx, sy, sz, x, y, z) => { const b = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), m); b.position.set(x, y, z); b.castShadow = true; g.add(b); };
+        bar(pw, 1, 1, -0.5 + pw / 2, 0.5, 0); bar(pw, 1, 1, 0.5 - pw / 2, 0.5, 0); bar(1, lh, 1, 0, 1 - lh / 2, 0);   // two posts + lintel, filling the edges of the hole
+        const hit = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({ visible: false })); hit.position.y = 0.5; g.add(hit);   // click target = the whole opening
         break;
       }
       case 'sphere': { const geo = new THREE.SphereGeometry(0.5, 20, 14); geo.translate(0, 0.5, 0); addMesh(geo, std()); break; }
@@ -419,6 +466,8 @@ export class World {
     if (o.scale && o.type !== 'path' && o.type !== 'light') g.scale.set(o.scale[0], o.scale[1], o.scale[2]);
     this.group.add(g);
     this.meshes.set(o.id, g);
+    if (o.type === 'hollow') this.updateRoofClip(o);
+    if (o.type === 'doorway' && o.target && this.meshes.has(o.target)) this.dirty.add(o.target);
     return g;
   }
   // the centre line of a path: the clicked points, run through a spline when `smooth` (so corners bend
