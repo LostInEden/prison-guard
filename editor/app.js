@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import { World, DEFAULTS, TYPE_LABELS, starterWorld, emptyWorld, uid } from './world.js';
+import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, starterWorld, emptyWorld, uid } from './world.js';
 
 const $ = (id) => document.getElementById(id);
 const clamp = THREE.MathUtils.clamp;
@@ -136,13 +136,28 @@ function setTool(tool) {
   buildGhost();
   renderPanel(); updateHint();
 }
-function select(o) {
-  selected = o; ed.selectedId = o?.id ?? null;
-  if (o) { gizmo.attach(world.meshes.get(o.id)); selBox.visible = true; refreshSelectionBox(); }
+// `selected` is the primary (the gizmo sits on it); extraSel holds the others added with Shift+click
+const extraSel = new Set();
+const extraBoxes = [];
+function select(o, add = false) {
+  if (add && o) {
+    if (selected && selected.id === o.id) { const next = [...extraSel][0]; extraSel.delete(next); selected = next ? world.getObject(next) : null; }   // shift-click the primary: drop it
+    else if (extraSel.has(o.id)) extraSel.delete(o.id);
+    else { if (selected) extraSel.add(selected.id); selected = o; }
+  } else { extraSel.clear(); selected = o; }
+  ed.selectedId = selected?.id ?? null;
+  if (selected) { gizmo.attach(world.meshes.get(selected.id)); selBox.visible = true; }
   else { gizmo.detach(); selBox.visible = false; }
+  refreshSelectionBox();
   renderPanel();
 }
-function refreshSelectionBox() { if (selected) { selBox.setFromObject(world.meshes.get(selected.id)); } }
+const selectedObjects = () => [selected, ...[...extraSel].map(id => world.getObject(id))].filter(Boolean);
+function refreshSelectionBox() {
+  if (selected) selBox.setFromObject(world.meshes.get(selected.id));
+  const ids = [...extraSel];
+  while (extraBoxes.length < ids.length) { const b = new THREE.BoxHelper(new THREE.Object3D(), 0xffa03a); scene.add(b); extraBoxes.push(b); }
+  extraBoxes.forEach((b, i) => { const g = ids[i] && world.meshes.get(ids[i]); b.visible = !!g; if (g) b.setFromObject(g); });
+}
 
 function pointerRay(e) {
   const r = renderer.domElement.getBoundingClientRect();
@@ -191,7 +206,7 @@ canvas.addEventListener('pointerdown', (e) => {
   ed.down = true;
   switch (ed.tool) {
     case 'select': {
-      if (hit?.object) select(hit.object);
+      if (hit?.object) select(hit.object, e.shiftKey);
       else if (hit?.spawn) { select(null); ed.tool = 'spawn'; setTool('spawn'); }
       else select(null);
       break;
@@ -339,6 +354,7 @@ window.addEventListener('keydown', (e) => {
     case 'Enter': if (ed.tool === 'path') finishPath(); break;
     case 'KeyF': if (selected) focusOn(world.meshes.get(selected.id).position); break;
     case 'KeyP': startPlay(false); break;
+    case 'KeyG': if (selected) hollowSelection(); break;
     case 'BracketLeft': adjustBrush(-1); break;
     case 'BracketRight': adjustBrush(1); break;
   }
@@ -360,7 +376,44 @@ function liftBy(m) {
 }
 function adjustBrush(d) { const b = ed.tool === 'treebrush' ? ed.treeBrush : ed.brush; b.radius = clamp(b.radius + d * 1.5, 1, 60); renderPanel(); }
 function focusOn(p) { const off = editCam.position.clone().sub(orbit.target); orbit.target.copy(p); editCam.position.copy(p).add(off.setLength(Math.min(off.length(), 25))); }
-function deleteSelected() { pushUndo(); world.removeObject(selected.id); select(null); }
+function deleteSelected() { pushUndo(); for (const o of selectedObjects()) world.removeObject(o.id); select(null); }
+
+// ---- hollow: turn the selected shapes into one shell you can walk into
+function hollowSelection() {
+  const items = selectedObjects().filter(o => HOLLOW_TYPES.includes(o.type));
+  if (!items.length) { toast('Select boxes, walls, cylinders or spheres first'); return; }
+  pushUndo();
+  const cx = items.reduce((a, o) => a + o.pos[0], 0) / items.length, cz = items.reduce((a, o) => a + o.pos[2], 0) / items.length, cy = Math.min(...items.map(o => o.pos[1]));
+  const parts = items.map(o => ({ type: o.type, pos: [o.pos[0] - cx, o.pos[1] - cy, o.pos[2] - cz], rot: o.rot || 0, scale: [...o.scale], half: !!o.half }));
+  for (const o of items) world.removeObject(o.id);
+  const h = world.addObject({ type: 'hollow', pos: [cx, cy, cz], rot: 0, parts, cuts: [], color: items[0].color, name: items[0].name || '' });
+  select(h); toast(`Hollowed ${items.length} piece${items.length > 1 ? 's' : ''}`);
+}
+// subtract the selected boxes from the selected hollow (doorways, windows)
+function carveSelection() {
+  const objs = selectedObjects(), hollow = objs.find(o => o.type === 'hollow'), boxes = objs.filter(o => o.type === 'box' || o.type === 'wall');
+  if (!hollow || !boxes.length) { toast('Select a hollow and at least one box'); return; }
+  pushUndo();
+  const r = hollow.rot || 0, c = Math.cos(r), s = Math.sin(r);
+  for (const b of boxes) {
+    const dx = b.pos[0] - hollow.pos[0], dz = b.pos[2] - hollow.pos[2];   // world -> hollow local
+    hollow.cuts.push({ type: 'box', pos: [dx * c - dz * s, b.pos[1] - hollow.pos[1], dx * s + dz * c], rot: (b.rot || 0) - r, scale: [...b.scale] });
+    world.removeObject(b.id);
+  }
+  world.rebuildObject(hollow.id); select(hollow); toast(`Carved ${boxes.length} opening${boxes.length > 1 ? 's' : ''}`);
+}
+// put the parts (and cutters) back as ordinary objects
+function splitHollow(h) {
+  pushUndo();
+  const r = h.rot || 0, c = Math.cos(r), s = Math.sin(r);
+  const toWorld = (p) => [h.pos[0] + p.pos[0] * c + p.pos[2] * s, h.pos[1] + p.pos[1], h.pos[2] - p.pos[0] * s + p.pos[2] * c];   // hollow local -> world
+  const made = [];
+  for (const p of h.parts) made.push(world.addObject({ type: p.type, pos: toWorld(p), rot: (p.rot || 0) + r, scale: [...p.scale], half: !!p.half, color: h.color, grounded: false }));
+  for (const q of h.cuts || []) made.push(world.addObject({ type: 'box', pos: toWorld(q), rot: (q.rot || 0) + r, scale: [...q.scale], color: '#c0392b', grounded: false, solid: false, name: 'Opening cutter' }));
+  world.removeObject(h.id);
+  select(made[0]); for (const m of made.slice(1)) select(m, true);
+  toast('Split into parts');
+}
 function duplicateSelected() {
   pushUndo();
   const copy = structuredClone(selected); copy.id = uid(); copy.pos = [copy.pos[0] + 1.5, copy.pos[1], copy.pos[2] + 1.5];
@@ -457,7 +510,8 @@ function renderPanel() {
     root.appendChild(el('h3', { text: 'SPAWN POINT' }));
     root.appendChild(el('div', { class: 'note', text: 'Click on the ground to move where the guard starts. He faces away from the camera.' }));
     root.appendChild(range('Facing', world.data.spawn.yaw, -3.14, 3.14, 0.05, (v) => { world.data.spawn.yaw = v; world.updateSpawnMarker(); }, (v) => v.toFixed(2)));
-  } else if (selected) renderObjectPanel(root, selected);
+  } else if (extraSel.size) renderMultiPanel(root);
+  else if (selected) renderObjectPanel(root, selected);
   else {
     root.appendChild(el('h3', { text: 'SELECT' }));
     root.appendChild(el('div', { class: 'note', text: 'Click an object to select it. 1/2/3 = move / rotate / scale gizmo. Delete removes, Ctrl+D duplicates, F frames it. Right-drag orbits, middle-drag pans, wheel zooms, WASD + E/C fly.' }));
@@ -479,6 +533,22 @@ function renderPanel() {
   }
   sec.appendChild(el('div', { class: 'note', text: 'Worlds autosave to this browser every 30 s. EXPORT downloads a .json you can keep or send; IMPORT loads one.' }));
   root.appendChild(sec);
+}
+function renderMultiPanel(root) {
+  const objs = selectedObjects();
+  root.appendChild(el('h3', { text: `${objs.length} SELECTED` }));
+  root.appendChild(el('div', { class: 'note', text: objs.map(o => o.name || TYPE_LABELS[o.type] || o.type).join(' · ') }));
+  const hollow = objs.find(o => o.type === 'hollow'), shapes = objs.filter(o => HOLLOW_TYPES.includes(o.type));
+  if (hollow && shapes.length && hollow === selected) {
+    root.appendChild(el('button', { class: 'primary', style: 'width:100%;margin-top:8px', text: 'CARVE OPENINGS', onclick: carveSelection }));
+    root.appendChild(el('div', { class: 'note', text: 'Cuts the other shapes out of the hollow — doorways, windows, hatches. Let the cutter poke right through the wall.' }));
+  } else if (shapes.length === objs.length) {
+    root.appendChild(el('button', { class: 'primary', style: 'width:100%;margin-top:8px', text: 'HOLLOW  (G)', onclick: hollowSelection }));
+    root.appendChild(el('div', { class: 'note', text: 'Joins these into one shell with walls, floor and roof of the thickness you choose afterwards. Push pieces into each other by more than the wall thickness so their insides connect.' }));
+  } else if (hollow) root.appendChild(el('div', { class: 'note', text: 'To carve: click the hollow last (so the gizmo is on it), with the cutter boxes also selected.' }));
+  else root.appendChild(el('div', { class: 'note', text: 'Only boxes, walls, cylinders and spheres can be hollowed.' }));
+  root.appendChild(el('div', { class: 'note', text: 'Shift+click adds or removes. The gizmo moves the last one clicked.' }));
+  root.appendChild(el('button', { style: 'width:100%;margin-top:6px', text: 'DELETE ALL', onclick: deleteSelected }));
 }
 function renderObjectPanel(root, o) {
   root.appendChild(el('h3', { text: (TYPE_LABELS[o.type] || o.type).toUpperCase() }));
@@ -506,6 +576,19 @@ function renderObjectPanel(root, o) {
     if (o.interact === 'note') root.appendChild(field('Message', el('input', { type: 'text', value: o.text || '', onchange: (e) => { o.text = e.target.value; } })));
     if (o.interact === 'pickup') root.appendChild(el('div', { class: 'note', text: 'Name above is what shows in the inventory; a door with the same Key name unlocks with it.' }));
   }
+  if (o.type === 'cylinder') {
+    root.appendChild(field('Half', el('input', { type: 'checkbox', ...(o.half ? { checked: '' } : {}), onchange: (e) => { o.half = e.target.checked; apply(true); } })));
+    if (o.half) root.appendChild(el('div', { class: 'note', text: 'Half cylinder: the flat side sits on the object\'s origin and the curve bulges out the back. Size is that of the full cylinder it was cut from.' }));
+  }
+  if (HOLLOW_TYPES.includes(o.type)) {
+    root.appendChild(el('button', { style: 'width:100%;margin-top:6px', text: 'HOLLOW  (G)', onclick: hollowSelection }));
+    root.appendChild(el('div', { class: 'note', text: 'Turns it into a room you can walk into. Shift+click more shapes first to hollow them as one building.' }));
+  }
+  if (o.type === 'hollow') {
+    root.appendChild(field('Wall thick.', numInput(o.thickness, (v) => { o.thickness = clamp(v, 0.05, 3); apply(true); }, 0.05)));
+    root.appendChild(el('div', { class: 'note', text: `${o.parts.length} part${o.parts.length === 1 ? '' : 's'}, ${(o.cuts || []).length} opening${(o.cuts || []).length === 1 ? '' : 's'}. To cut a doorway: place a box through the wall, Shift+click this hollow, then CARVE.` }));
+    root.appendChild(el('button', { style: 'width:100%;margin-top:6px', text: 'SPLIT APART', onclick: () => splitHollow(o) }));
+  }
   if (o.type === 'door') {
     root.appendChild(field('Bars', el('input', { type: 'checkbox', ...(o.bars ? { checked: '' } : {}), onchange: (e) => { o.bars = e.target.checked; apply(true); } })));
     root.appendChild(field('Locked', el('input', { type: 'checkbox', ...(o.locked ? { checked: '' } : {}), onchange: (e) => { o.locked = e.target.checked; pushUndo(); } })));
@@ -531,7 +614,7 @@ function renderObjectPanel(root, o) {
 }
 function updateHint() {
   const h = {
-    select: 'Click to select · 1/2/3 move/rotate/scale · R , . rotate · PgUp/PgDn lift · Shift snaps · Del delete · Ctrl+D duplicate · F frame · Ctrl+Z undo · P play',
+    select: 'Click to select · Shift+click multi-select · G hollow · 1/2/3 move/rotate/scale · R , . rotate · PgUp/PgDn lift · Del · Ctrl+D duplicate · F frame · Ctrl+Z undo · P play',
     terrain: 'Click-drag to sculpt · [ ] brush size · release to re-snap objects',
     path: 'Click points · double-click / Enter to finish · Esc cancel',
     treebrush: 'Click-drag to scatter trees · [ ] brush size',
@@ -598,7 +681,8 @@ plc.addEventListener('lock', () => $('clickToPlay').classList.remove('show'));
 plc.addEventListener('unlock', () => { if (ed.mode === 'play') stopPlay(); });
 
 function pushOutOBB(pos, c, r) {
-  const cos = Math.cos(-c.rot), sin = Math.sin(-c.rot);
+  // world -> collider local (inverse of a rotation about Y by c.rot)
+  const cos = Math.cos(c.rot), sin = Math.sin(c.rot);
   const dx = pos.x - c.cx, dz = pos.z - c.cz;
   const lx = dx * cos - dz * sin, lz = dx * sin + dz * cos;
   const nx = clamp(lx, -c.hx, c.hx), nz = clamp(lz, -c.hz, c.hz);
@@ -606,8 +690,7 @@ function pushOutOBB(pos, c, r) {
   if (d >= r) return;
   if (d < 1e-5) { const px = c.hx - Math.abs(lx), pz = c.hz - Math.abs(lz); if (px < pz) ox = Math.sign(lx || 1) * (px + r); else oz = Math.sign(lz || 1) * (pz + r); }
   else { ox *= (r - d) / d; oz *= (r - d) / d; }
-  const wc = Math.cos(c.rot), ws = Math.sin(c.rot);
-  pos.x += ox * wc - oz * ws; pos.z += ox * ws + oz * wc;
+  pos.x += ox * cos + oz * sin; pos.z += -ox * sin + oz * cos;   // local -> world
 }
 function updatePlayer(dt) {
   const fwd = new THREE.Vector3(); playCam.getWorldDirection(fwd); fwd.y = 0; fwd.normalize();

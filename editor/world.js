@@ -1,9 +1,12 @@
 // World data model + scene builder. The editor and the play mode both drive this.
 import * as THREE from 'three';
+import { Brush, Evaluator, ADDITION, SUBTRACTION } from 'three-bvh-csg';
 
 export const DEFAULTS = {
   box:      { scale: [2, 1, 2],     color: '#8d918c', solid: true,  grounded: true, interact: 'none', group: '', text: '' },
-  cylinder: { scale: [1, 2, 1],     color: '#6e7480', solid: true,  grounded: true, interact: 'none', group: '', text: '' },
+  cylinder: { scale: [1, 2, 1],     color: '#6e7480', solid: true,  grounded: true, interact: 'none', group: '', text: '', half: false },
+  // a shell built from several shapes: union(parts) minus the same parts shrunk by `thickness`, minus any `cuts`
+  hollow:   { color: '#8d918c', thickness: 0.3, parts: [], cuts: [], solid: true, grounded: false },
   sphere:   { scale: [1, 1, 1],     color: '#c0a060', solid: true,  grounded: true, interact: 'none', group: '', text: '' },
   wall:     { scale: [4, 3, 0.3],   color: '#9a9d97', solid: true,  grounded: true, interact: 'none', group: '', text: '' },
   ramp:     { scale: [3, 1, 4],     color: '#7a7d78', solid: false, grounded: true },
@@ -12,7 +15,8 @@ export const DEFAULTS = {
   light:    { color: '#fff1d6', intensity: 20, distance: 18, on: true, group: '', grounded: true, offset: 2.6 },
   path:     { width: 3, color: '#2b2d30', points: [] },
 };
-export const TYPE_LABELS = { box: 'Box', cylinder: 'Cylinder', sphere: 'Sphere', wall: 'Wall', ramp: 'Ramp', door: 'Door', tree: 'Tree', light: 'Light', path: 'Path' };
+export const TYPE_LABELS = { box: 'Box', cylinder: 'Cylinder', sphere: 'Sphere', wall: 'Wall', ramp: 'Ramp', door: 'Door', tree: 'Tree', light: 'Light', path: 'Path', hollow: 'Hollow' };
+export const HOLLOW_TYPES = ['box', 'wall', 'cylinder', 'sphere'];   // shapes that can be hollowed together
 
 let nextId = 1;
 export const uid = () => 'o' + (nextId++).toString(36) + Math.random().toString(36).slice(2, 6);
@@ -48,6 +52,92 @@ export const TEX = {
 const matTrunk = new THREE.MeshStandardMaterial({ color: 0x3a2a1c, roughness: 1 });
 const matMetal = new THREE.MeshStandardMaterial({ color: 0x5b6068, roughness: 0.5, metalness: 0.8 });
 const matBars = new THREE.MeshStandardMaterial({ color: 0x3a3d42, roughness: 0.45, metalness: 0.9 });
+
+// ---------------------------------------------------------------------
+//  primitives + hollow (CSG) helpers
+// ---------------------------------------------------------------------
+// unit-sized solids, base at y = 0, footprint x,z in [-0.5, 0.5]. A half cylinder keeps its flat face at z = 0
+// and bulges towards -z, so its inside can run straight into whatever it is pushed against.
+const unitGeo = {};
+export function primitiveGeometry(kind) {
+  if (unitGeo[kind]) return unitGeo[kind];
+  let geo;
+  if (kind === 'cylinder') { geo = new THREE.CylinderGeometry(0.5, 0.5, 1, 24); geo.translate(0, 0.5, 0); }
+  else if (kind === 'halfcyl') {
+    const sh = new THREE.Shape(); sh.moveTo(0.5, 0); sh.absarc(0, 0, 0.5, 0, Math.PI, false); sh.lineTo(0.5, 0);
+    geo = new THREE.ExtrudeGeometry(sh, { depth: 1, bevelEnabled: false, curveSegments: 16 }); geo.rotateX(-Math.PI / 2);
+  }
+  else if (kind === 'sphere') { geo = new THREE.SphereGeometry(0.5, 24, 16); geo.translate(0, 0.5, 0); }
+  else { geo = new THREE.BoxGeometry(1, 1, 1); geo.translate(0, 0.5, 0); }
+  return unitGeo[kind] = geo;
+}
+export const partKind = (p) => p.type === 'cylinder' ? (p.half ? 'halfcyl' : 'cylinder') : p.type === 'sphere' ? 'sphere' : 'box';
+const _q = new THREE.Quaternion(), _e = new THREE.Euler(), _v = new THREE.Vector3();
+const partMatrix = (p) => new THREE.Matrix4().compose(new THREE.Vector3(p.pos[0], p.pos[1], p.pos[2]), _q.setFromEuler(_e.set(0, p.rot || 0, 0)), new THREE.Vector3(p.scale[0], p.scale[1], p.scale[2]));
+// the inside of a part: shrunk by the wall thickness on every side. The shrink is about (0, 0.5, 0), so a half
+// cylinder (which only occupies z <= 0) keeps its flat face in place and loses t off its curved side.
+function insetScale(p, t) {
+  const [sx, sy, sz] = p.scale;
+  return [Math.max(0.02, (sx - 2 * t) / sx), Math.max(0.02, (sy - 2 * t) / sy), Math.max(0.02, (sz - 2 * t) / sz)];
+}
+function insetMatrix(p, t) {
+  const k = insetScale(p, t);
+  return partMatrix(p).multiply(new THREE.Matrix4().makeTranslation(0, 0.5, 0)).multiply(new THREE.Matrix4().makeScale(k[0], k[1], k[2])).multiply(new THREE.Matrix4().makeTranslation(0, -0.5, 0));
+}
+// is a unit-space point inside a part of this kind?
+function insideUnit(kind, lx, ly, lz) {
+  if (ly < 0 || ly > 1) return false;
+  if (kind === 'box') return Math.abs(lx) <= 0.5 && Math.abs(lz) <= 0.5;
+  if (kind === 'halfcyl') return lz <= 0 && lx * lx + lz * lz <= 0.25;
+  return lx * lx + lz * lz <= 0.25;   // cylinder; a sphere is treated as a cylinder for walking purposes
+}
+// geometry of a hollow, in the hollow's own frame
+function buildHollowGeometry(o) {
+  const ev = new Evaluator(); ev.useGroups = false; ev.attributes = ['position', 'normal'];
+  const mk = (kind, m) => { const b = new Brush(primitiveGeometry(kind)); b.matrixAutoUpdate = false; b.matrix.copy(m); b.updateMatrixWorld(true); return b; };
+  const unionAll = (brushes) => brushes.reduce((acc, b) => acc ? ev.evaluate(acc, b, ADDITION) : b, null);
+  const outer = unionAll(o.parts.map(p => mk(partKind(p), partMatrix(p))));
+  const inner = unionAll(o.parts.map(p => mk(partKind(p), insetMatrix(p, o.thickness))));
+  if (!outer || !inner) return null;
+  let res = ev.evaluate(outer, inner, SUBTRACTION);
+  for (const c of o.cuts || []) res = ev.evaluate(res, mk('box', partMatrix(c)), SUBTRACTION);
+  res.geometry.computeBoundingSphere();
+  return res.geometry;
+}
+// thin wall colliders (hollow-local) that follow every part's outline, minus bits that sit inside another
+// part's interior or inside a cut — so you can walk from room to room and through doorways
+function hollowSegments(o) {
+  const t = o.thickness, segs = [], v = new THREE.Vector3(), a = new THREE.Vector3(), b = new THREE.Vector3();
+  const parts = o.parts.map(p => ({ p, kind: partKind(p), M: partMatrix(p), invInset: insetMatrix(p, t).invert() }));
+  const cutInv = (o.cuts || []).map(c => partMatrix(c).invert());
+  const blocked = (wx, wy, wz, self) => {
+    for (const q of parts) { if (q !== self) { v.set(wx, wy, wz).applyMatrix4(q.invInset); if (insideUnit(q.kind, v.x, v.y, v.z)) return true; } }
+    for (const inv of cutInv) { v.set(wx, wy, wz).applyMatrix4(inv); if (insideUnit('box', v.x, v.y, v.z)) return true; }
+    return false;
+  };
+  for (const q of parts) {
+    const [sx, sy, sz] = q.p.scale;
+    const ix = 0.5 - t / (2 * sx), iz = 0.5 - t / (2 * sz);   // outline pulled in by half a wall so the collider sits inside the wall
+    const pts = [];
+    if (q.kind === 'box') pts.push([ix, iz], [-ix, iz], [-ix, -iz], [ix, -iz], [ix, iz]);
+    else {
+      const full = q.kind !== 'halfcyl', n = Math.max(12, Math.ceil(Math.PI * (sx + sz) / 2 / 0.6)), m = full ? n : Math.ceil(n / 2);
+      for (let i = 0; i <= m; i++) { const ang = full ? (i / n) * Math.PI * 2 : Math.PI + (i / m) * Math.PI; pts.push([Math.cos(ang) * ix, full ? Math.sin(ang) * iz : Math.min(Math.sin(ang) * iz, -t / (2 * sz))]); }
+      if (!full) pts.push(pts[0]);   // the flat face
+    }
+    for (let i = 0; i < pts.length - 1; i++) {
+      a.set(pts[i][0], 0, pts[i][1]).applyMatrix4(q.M); b.set(pts[i + 1][0], 0, pts[i + 1][1]).applyMatrix4(q.M);
+      const len = Math.hypot(b.x - a.x, b.z - a.z); if (len < 1e-4) continue;
+      const n = Math.max(1, Math.ceil(len / 0.6)), dx = (b.x - a.x) / len, dz = (b.z - a.z) / len, rot = Math.atan2(-dz, dx);
+      for (let k = 0; k < n; k++) {
+        const cx = a.x + dx * len * (k + 0.5) / n, cz = a.z + dz * len * (k + 0.5) / n;
+        if (blocked(cx, a.y + Math.min(1, sy / 2), cz, q)) continue;
+        segs.push({ cx, cz, rot, hx: len / n / 2 + 0.05, hz: Math.max(t / 2, 0.12), bottom: a.y, top: a.y + sy });
+      }
+    }
+  }
+  return segs;
+}
 
 // ---------------------------------------------------------------------
 //  default / starter world
@@ -190,7 +280,7 @@ export class World {
   syncTransform(o) {
     const g = this.meshes.get(o.id); if (!g) return;
     g.position.set(o.pos[0], o.pos[1], o.pos[2]); g.rotation.set(0, o.rot || 0, 0);
-    if (o.scale && o.type !== 'path' && o.type !== 'light') g.scale.set(o.scale[0], o.scale[1], o.scale[2]);
+    if (o.scale && o.type !== 'path' && o.type !== 'light') g.scale.set(o.scale[0], o.scale[1], o.scale[2]); else g.scale.set(1, 1, 1);
   }
   // read transform back from a gizmo-manipulated group.
   //   lifting — true while the user is dragging along the Y axis. A grounded object that gets lifted
@@ -207,7 +297,7 @@ export class World {
       } else g.position.y = ground + (o.offset || 0);   // slide along the terrain
     }
     o.pos = [g.position.x, g.position.y, g.position.z]; o.rot = g.rotation.y;
-    if (o.type !== 'path' && o.type !== 'light') o.scale = [Math.max(0.05, g.scale.x), Math.max(0.05, g.scale.y), Math.max(0.05, g.scale.z)];
+    if (o.scale && o.type !== 'path' && o.type !== 'light') o.scale = [Math.max(0.05, g.scale.x), Math.max(0.05, g.scale.y), Math.max(0.05, g.scale.z)];
     this.syncTransform(o);
     if (final && o.type === 'light' && o.grounded) this.rebuildObject(o.id);
   }
@@ -232,7 +322,14 @@ export class World {
         geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3)); geo.setIndex(idx); geo.computeVertexNormals();
         addMesh(geo, std({ side: THREE.DoubleSide })); break;
       }
-      case 'cylinder': { const geo = new THREE.CylinderGeometry(0.5, 0.5, 1, 20); geo.translate(0, 0.5, 0); addMesh(geo, std()); break; }
+      case 'cylinder': { addMesh(primitiveGeometry(o.half ? 'halfcyl' : 'cylinder').clone(), std()); break; }
+      case 'hollow': {
+        let geo = null;
+        try { geo = buildHollowGeometry(o); } catch (err) { console.warn('Hollow failed to build', err); }
+        if (geo) addMesh(geo, std({ side: THREE.DoubleSide }));
+        g.userData.hollow = { t: o.thickness, segs: hollowSegments(o), parts: o.parts.map(p => ({ p, kind: partKind(p), inv: partMatrix(p).invert() })) };
+        break;
+      }
       case 'sphere': { const geo = new THREE.SphereGeometry(0.5, 20, 14); geo.translate(0, 0.5, 0); addMesh(geo, std()); break; }
       case 'door': {
         const hinge = new THREE.Group(); hinge.name = 'hinge'; g.add(hinge);
@@ -347,6 +444,15 @@ export class World {
         out.push({ cx: o.pos[0] + c * hx, cz: o.pos[2] - s * hx, hx, hz: Math.max(0.12, o.scale[2] / 2), rot: o.rot || 0, top: o.pos[1] + o.scale[1], bottom: o.pos[1] });
       } else if (o.type === 'tree') {
         out.push({ cx: o.pos[0], cz: o.pos[2], hx: 0.3 * o.scale[0], hz: 0.3 * o.scale[2], rot: 0, top: o.pos[1] + 2, bottom: o.pos[1] });
+      } else if (o.type === 'hollow') {
+        if (!o.solid) continue;
+        const H = this.meshes.get(o.id)?.userData.hollow; if (!H) continue;
+        const r = o.rot || 0, c = Math.cos(r), s = Math.sin(r);
+        for (const sg of H.segs) out.push({ cx: o.pos[0] + sg.cx * c + sg.cz * s, cz: o.pos[2] - sg.cx * s + sg.cz * c, hx: sg.hx, hz: sg.hz, rot: sg.rot + r, top: o.pos[1] + sg.top, bottom: o.pos[1] + sg.bottom });
+      } else if (o.type === 'cylinder' && o.half && o.solid) {
+        // the solid half sits on the -z side of the origin
+        const r = o.rot || 0, lz = -o.scale[2] / 4;
+        out.push({ cx: o.pos[0] + Math.sin(r) * lz, cz: o.pos[2] + Math.cos(r) * lz, hx: o.scale[0] / 2, hz: o.scale[2] / 4, rot: r, top: o.pos[1] + o.scale[1], bottom: o.pos[1] });
       } else if (o.solid && o.scale) {
         out.push({ cx: o.pos[0], cz: o.pos[2], hx: o.scale[0] / 2, hz: o.scale[2] / 2, rot: o.rot || 0, top: o.pos[1] + o.scale[1], bottom: o.pos[1] });
       }
@@ -356,16 +462,28 @@ export class World {
   // height of walkable surfaces (terrain + tops of low solids you can stand on + ramps)
   standHeight(x, z, feetY) {
     let h = this.sampleHeight(x, z);
+    const stand = (top) => { if (top <= feetY + 0.55 && top > h) h = top; };
     for (const o of this.data.objects) {
-      if (!o.scale) continue;
-      const c = Math.cos(-(o.rot || 0)), s = Math.sin(-(o.rot || 0));
+      // world -> object local (rotation about Y by o.rot)
+      const c = Math.cos(o.rot || 0), s = Math.sin(o.rot || 0);
       const dx = x - o.pos[0], dz = z - o.pos[2];
       const lx = dx * c - dz * s, lz = dx * s + dz * c;
+      if (o.type === 'hollow') {
+        const H = this.meshes.get(o.id)?.userData.hollow; if (!H) continue;
+        for (const q of H.parts) {
+          _v.set(lx, 0, lz).applyMatrix4(q.inv);
+          if (!insideUnit(q.kind, _v.x, 0.5, _v.z)) continue;
+          const bottom = o.pos[1] + q.p.pos[1];
+          stand(bottom + H.t);            // the floor slab
+          stand(bottom + q.p.scale[1]);   // the roof
+        }
+        continue;
+      }
+      if (!o.scale) continue;
       if (o.type === 'ramp') {
         if (Math.abs(lx) <= o.scale[0] / 2 && Math.abs(lz) <= o.scale[2] / 2) { const t = (lz + o.scale[2] / 2) / o.scale[2]; h = Math.max(h, o.pos[1] + t * o.scale[1]); }
       } else if (o.solid && (o.type === 'box' || o.type === 'wall' || o.type === 'cylinder')) {
-        const top = o.pos[1] + o.scale[1];
-        if (Math.abs(lx) <= o.scale[0] / 2 && Math.abs(lz) <= o.scale[2] / 2 && top <= feetY + 0.55 && top > h) h = top;
+        if (Math.abs(lx) <= o.scale[0] / 2 && Math.abs(lz) <= o.scale[2] / 2 && !(o.half && lz > 0)) stand(o.pos[1] + o.scale[1]);
       }
     }
     return h;
