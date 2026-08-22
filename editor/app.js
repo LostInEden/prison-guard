@@ -527,6 +527,12 @@ function loadWorld(data) { select(null); ed.undo = []; world.load(data); $('worl
 function applySettings() { const s = world.data.settings; applyTime(s.time); scene.fog.density = s.fog; }
 $('btnNew').addEventListener('click', () => { if (confirm('Start a new blank world? (unsaved changes are lost)')) loadWorld(emptyWorld()); });
 $('btnStarter').addEventListener('click', () => { if (confirm('Load the sample world? (unsaved changes are lost)')) loadWorld(starterWorld()); });
+// worlds committed in worlds/ can be loaded by URL, e.g. editor/?load=../worlds/prison.json
+async function loadWorldUrl(url) {
+  try { const r = await fetch(url); if (!r.ok) throw new Error(r.status + ' ' + r.statusText); loadWorld(await r.json()); toast(`Loaded ${url.split('/').pop()}`); }
+  catch (err) { alert(`Could not load ${url}: ${err.message}`); }
+}
+$('btnPrison').addEventListener('click', () => { if (confirm('Load the prison compound? (unsaved changes are lost)')) loadWorldUrl('../worlds/prison.json'); });
 $('btnSave').addEventListener('click', saveLocal);
 $('btnExport').addEventListener('click', exportWorld);
 $('btnImport').addEventListener('click', () => $('fileImport').click());
@@ -884,6 +890,8 @@ function renderInventory() { $('inventoryText').innerHTML = player.inventory.len
   if (saved) { try { data = JSON.parse(saved); } catch { data = null; } }
   loadWorld(data || starterWorld());
   setTool('select');
+  const want = new URLSearchParams(location.search).get('load');
+  if (want) loadWorldUrl(want);
   setInterval(() => { if (ed.mode === 'edit') { world.data.name = $('worldName').value || world.data.name; localStorage.setItem('ns-world', JSON.stringify(world.serialize())); } }, 30000);
 }
 window.addEventListener('resize', () => {
