@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Night Shift — Prison Guard MVP</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: "Courier New", monospace; color: #e6e6e6; }
+  canvas { display: block; }
+  button { font-family: inherit; }
+
+  /* ---------- in-game HUD ---------- */
+  #hud { position: fixed; inset: 0; pointer-events: none; display: none; }
+  #hud.show { display: block; }
+  #crosshair { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px; border-radius: 50%; background: rgba(255,255,255,.8); box-shadow: 0 0 4px #000; }
+  #prompt { position: absolute; left: 50%; top: 56%; transform: translateX(-50%); font-size: 18px; padding: 6px 14px; background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.25); border-radius: 4px; opacity: 0; transition: opacity .12s; white-space: nowrap; }
+  #prompt b { color: #ffd25a; }
+  #objective { position: absolute; left: 20px; top: 18px; max-width: 420px; font-size: 15px; line-height: 1.4; background: rgba(0,0,0,.45); padding: 10px 14px; border-left: 3px solid #ffd25a; }
+  #objective small { display: block; color: #9aa; letter-spacing: 2px; font-size: 11px; margin-bottom: 4px; }
+  #inventory { position: absolute; left: 20px; bottom: 20px; max-width: 55vw; font-size: 14px; background: rgba(0,0,0,.45); padding: 8px 14px; }
+  #inventory small { display: block; color: #9aa; letter-spacing: 2px; font-size: 11px; margin-bottom: 4px; }
+  #inventory span { display: inline-block; margin-right: 10px; color: #ffd25a; }
+  #message { position: absolute; left: 50%; top: 32%; transform: translateX(-50%); font-size: 20px; text-shadow: 0 0 8px #000, 0 0 2px #000; opacity: 0; transition: opacity .3s; text-align: center; max-width: 70%; }
+  #status { position: absolute; right: 20px; bottom: 20px; font-size: 13px; color: #9aa; text-align: right; background: rgba(0,0,0,.45); padding: 8px 14px; }
+  #status b { color: #e6e6e6; }
+  #vignette { position: fixed; inset: 0; pointer-events: none; background: radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,0,.7) 100%); }
+
+  /* ---------- fade layer ---------- */
+  #black { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; transition: opacity 0s; }
+
+  /* ---------- main menu ---------- */
+  #menu { position: fixed; inset: 0; display: flex; align-items: center; justify-content: flex-start; padding-left: 9vw; background: linear-gradient(90deg, rgba(0,0,0,.86) 0%, rgba(0,0,0,.55) 45%, rgba(0,0,0,.1) 100%); }
+  #menu.hidden { display: none; }
+  #menu .card { width: 380px; }
+  #menu h1 { margin: 0 0 6px; font-size: 52px; letter-spacing: 10px; color: #ffd25a; text-shadow: 0 0 24px rgba(255,210,90,.35); }
+  #menu h2 { margin: 0 0 40px; font-weight: normal; font-size: 13px; letter-spacing: 4px; color: #9aa; }
+  #menu .buttons button, #options button, #pause button, #exitScreen button {
+    display: block; width: 100%; text-align: left; padding: 12px 18px; margin-bottom: 10px; font-size: 18px; letter-spacing: 4px;
+    color: #e6e6e6; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.18); cursor: pointer; transition: background .12s, border-color .12s, padding-left .12s;
+  }
+  #menu .buttons button:hover, #options button:hover, #pause button:hover, #exitScreen button:hover { background: rgba(255,210,90,.16); border-color: #ffd25a; padding-left: 26px; }
+  #menu .footer { margin-top: 30px; color: #778; font-size: 12px; letter-spacing: 2px; }
+  #options { display: none; }
+  #options.show { display: block; }
+  #options label { display: flex; justify-content: space-between; align-items: center; font-size: 14px; margin: 14px 0; color: #cdd; }
+  #options input[type=range] { width: 170px; accent-color: #ffd25a; }
+  #options input[type=checkbox] { accent-color: #ffd25a; transform: scale(1.3); }
+  #options .val { width: 44px; text-align: right; color: #ffd25a; margin-left: 8px; display: inline-block; }
+  #menu .buttons.hidden { display: none; }
+
+  /* ---------- pause / exit ---------- */
+  #pause, #exitScreen { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,.75); }
+  #pause.show, #exitScreen.show { display: flex; }
+  #pause .card, #exitScreen .card { width: 360px; padding: 30px 36px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.6); }
+  #pause h3, #exitScreen h3 { margin: 0 0 18px; letter-spacing: 6px; color: #ffd25a; font-size: 22px; }
+  #pause table { border-collapse: collapse; font-size: 13px; margin-bottom: 18px; color: #bcc; }
+  #pause td { padding: 3px 12px 3px 0; }
+  #pause td:first-child { color: #ffd25a; white-space: nowrap; }
+  #exitScreen p { color: #bcc; font-size: 14px; margin: 0 0 20px; }
+
+  /* ---------- fast travel ---------- */
+  #travel { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,.82); }
+  #travel.open { display: flex; }
+  #travel .panel { display: flex; gap: 26px; padding: 26px 30px; border: 1px solid rgba(255,255,255,.15); background: rgba(6,8,12,.92); }
+  #travel h3 { margin: 0 0 4px; letter-spacing: 5px; color: #ffd25a; font-size: 20px; }
+  #travel .hint { color: #9aa; font-size: 12px; margin-bottom: 12px; }
+  #travel canvas { border: 1px solid rgba(255,255,255,.2); cursor: crosshair; display: block; }
+  #travel .list { display: flex; flex-direction: column; gap: 4px; min-width: 230px; }
+  #travel button { font-size: 13px; text-align: left; padding: 6px 12px; color: #e6e6e6; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.15); cursor: pointer; }
+  #travel button:hover { background: rgba(255,210,90,.18); border-color: #ffd25a; }
+  #travel button b { color: #ffd25a; margin-right: 8px; }
+  #travel .close { margin-top: auto; color: #9aa; font-size: 12px; }
+</style>
+</head>
+<body>
+  <div id="vignette"></div>
+  <div id="hud">
+    <div id="crosshair"></div>
+    <div id="prompt"></div>
+    <div id="objective"><small>OBJECTIVE</small><span id="objectiveText">…</span></div>
+    <div id="message"></div>
+    <div id="inventory"><small>INVENTORY</small><span id="inventoryText">— empty —</span></div>
+    <div id="status">Flashlight <b id="flashState">ON</b> <b id="aimState"></b> &nbsp;·&nbsp; Power <b id="powerState">OFF</b></div>
+  </div>
+
+  <div id="travel">
+    <div class="panel">
+      <div>
+        <h3>FAST TRAVEL</h3>
+        <div class="hint">Click anywhere on the map to go there, or pick a location.</div>
+        <canvas id="travelMap" width="720" height="450"></canvas>
+      </div>
+      <div class="list" id="travelList"></div>
+    </div>
+  </div>
+
+  <div id="black"></div>
+
+  <div id="menu">
+    <div class="card">
+      <h1>NIGHT SHIFT</h1>
+      <h2>PRISON GUARD — PLAYABLE MVP</h2>
+      <div class="buttons" id="menuButtons">
+        <button id="btnStart">START</button>
+        <button id="btnOptions">OPTIONS</button>
+        <button id="btnExit">EXIT</button>
+      </div>
+      <div id="options">
+        <label>Mouse sensitivity <span><input id="optSens" type="range" min="0.3" max="2.5" step="0.1" value="1"><span class="val" id="optSensVal">1.0</span></span></label>
+        <label>Field of view <span><input id="optFov" type="range" min="60" max="100" step="1" value="75"><span class="val" id="optFovVal">75</span></span></label>
+        <label>Head bob <input id="optBob" type="checkbox" checked></label>
+        <label>Flashlight shadows <input id="optShadows" type="checkbox" checked></label>
+        <button id="btnBack">BACK</button>
+      </div>
+      <div class="footer">WASD move · mouse look · F interact · hold RMB aim light · M map</div>
+    </div>
+  </div>
+
+  <div id="pause">
+    <div class="card">
+      <h3>PAUSED</h3>
+      <table>
+        <tr><td>W A S D</td><td>Move &nbsp;·&nbsp; Shift run</td></tr>
+        <tr><td>F</td><td>Interact</td></tr>
+        <tr><td>Hold RMB / Q</td><td>Aim flashlight</td></tr>
+        <tr><td>L</td><td>Toggle flashlight</td></tr>
+        <tr><td>M / Tab</td><td>Fast-travel map</td></tr>
+      </table>
+      <button id="btnResume">RESUME</button>
+      <button id="btnMenu">MAIN MENU</button>
+    </div>
+  </div>
+
+  <div id="exitScreen">
+    <div class="card">
+      <h3>SHIFT OVER</h3>
+      <p>Thanks for playing the demo. You can close this tab, or head back to the menu.</p>
+      <button id="btnExitMenu">MAIN MENU</button>
+    </div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

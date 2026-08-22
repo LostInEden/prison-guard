@@ -1,0 +1,64 @@
+# Night Shift — prison guard MVP
+
+First-person browser prototype built with [Three.js](https://threejs.org) (loaded from a CDN, no build step).
+
+## Run
+
+Browsers block ES modules from `file://`, so serve the folder with any static server:
+
+```bash
+cd prison-guard
+python3 -m http.server 8765
+```
+
+then open http://localhost:8765 (or `npx serve .`).
+
+## Controls
+
+| Key | Action |
+| --- | --- |
+| W A S D / arrows | Move |
+| Mouse | Look |
+| Shift | Run |
+| F | Interact (keys, doors, switches, breaker) |
+| Hold right-click / Q | Aim the flashlight independently of your view (eases back to centre on release) |
+| L | Toggle flashlight |
+| M / Tab | Fast-travel map — click a numbered spot or anywhere walkable |
+| Esc | Pause |
+
+## Demo flow
+
+0. Main menu (START / OPTIONS / EXIT) plays over a live view from the man trap. START slams the outer door, cuts to black, fades up facing the inner steel door, which slides open onto the lit entry hall.
+1. Report to the **SECURITY ROOM** (up the ramp, first door on the left; glass window over the hall). Desks, CCTV wall, computer, cork boards, and the **motion sensor grid** — a wall map with a bulb per room. Press the buttons under it (or `F` on the computer for all rooms) to make the bulbs flash as if motion were detected. The Cell Block A bulb also flashes for real when the prisoner is loose.
+2. Power is out in the main block. Take the **Utility Room Key** off the guard office desk.
+3. Cross the hall, unlock **UTILITY**, reset the breaker → hall/cell-block lights come on (room light switches work now too).
+4. Enter **CELL BLOCK A**. A silhouette runs into cell 8 and vanishes, dropping the **Yard Gate Key**.
+5. Unlock the **YARD** gate at the east end of the hall → demo complete, free roam.
+6. The **PERIMETER** gate at the back of the yard and the main entrance lead outside: access road, perimeter wall with guard towers, and forested hills all around (walkable).
+
+## Tweaking
+
+Everything lives in `main.js`:
+
+- `rooms`, `cells`, `doorDefs` — the tile map (1 tile = 2 m). Walls are generated automatically around carved floor.
+- `makeKey / makeSwitch / makeBreaker / makeDoor` — interactables. Anything with `userData.entity = { prompt(), interact() }` pushed into `interactables` works with `F`.
+- `addLamp(x, z, zone)` — lights, grouped by zone so switches/breaker can toggle them.
+- `onPowerRestored / onKeyPicked / updateFigure` — the objective chain.
+- `PERIM`, `ROAD_Z`, the EXTERIOR block — grounds outside the building. `box(..., solid=true)` adds a world collider.
+- `terrainH(x, z)` — the heightfield (flat inside the perimeter + road, hills beyond). Trees are placed on it; the player walks on it via `groundHeight`.
+- `GX0` — the grid's first tile column; the entry wing (man trap, entry hall, security room) lives at negative x so the original rooms kept their coordinates.
+- `motionRooms` / `bulbs` / `state.motion` — the security-room motion grid. `updateMotionBulbs` decides what flashes.
+- `cine` + `updateCinematic` — menu → door close → black → fade-in → steel door → play.
+- `travelSpots` — fast-travel presets (world metres + facing yaw); the map canvas is drawn from the same data.
+
+## World editor (`editor/`)
+
+Open http://localhost:8765/editor/ (same static server). Build a space, drop the guard in, iterate.
+
+- **Camera**: right-drag orbit · middle-drag pan · wheel zoom · WASD + E/C fly · F frames the selection.
+- **Tools** (left bar): Select (Q) · Terrain (T) raise/lower/smooth/flatten brush, `[`/`]` resize · Path (H) click points, double-click/Enter to finish — a road ribbon that follows the terrain · Box / Wall / Ramp / Cylinder / Sphere / Door / Light / Tree · Tree brush (drag to scatter) · Spawn (S) click to place the guard's start.
+- **Selection**: gizmo modes 1 move / 2 rotate / 3 scale · Delete · Ctrl+D duplicate · Ctrl+Z undo. The right panel edits size, colour, solid, "on ground", and interactions: pick up (inventory; a door whose *Key name* matches unlocks with it), light switch (toggles lights in a *group*), or show a message. Doors can be bars or solid, locked or not.
+- **World**: time of day and fog sliders. Autosaves to the browser every 30 s; SAVE (Ctrl+S) saves now; EXPORT downloads a `.json`, IMPORT loads one; SAMPLE loads the starter hut.
+- **Play** (P / ▶ PLAY) starts at the spawn; PLAY HERE drops the guard where the camera is looking. Same controls as the game: WASD, Shift run, F interact, L flashlight, hold RMB/Q to aim the light. You walk on the sculpted terrain, up ramps, and onto anything under ~0.5 m tall. Esc returns to the editor and resets doors/lights/pickups.
+
+Files: `editor/world.js` (data model, scene builder, terrain, collision helpers) and `editor/app.js` (editor UI, tools, undo/save, play mode).
