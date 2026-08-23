@@ -161,24 +161,33 @@ function hollowSegments(o) {
       a.set(pts[i][0], 0, pts[i][1]).applyMatrix4(q.M); b.set(pts[i + 1][0], 0, pts[i + 1][1]).applyMatrix4(q.M);
       const len = Math.hypot(b.x - a.x, b.z - a.z); if (len < 1e-4) continue;
       const n = Math.max(1, Math.ceil(len / 0.6)), dx = (b.x - a.x) / len, dz = (b.z - a.z) / len, rot = Math.atan2(-dz, dx);
-      const midY = a.y + Math.min(1, sy / 2);
       for (let k = 0; k < n; k++) {
-        let c0 = k / n, c1 = (k + 1) / n;
         const at = (f) => [a.x + dx * len * f, a.z + dz * len * f];
-        let [cx, cz] = at((c0 + c1) / 2);
-        if (blocked(cx, midY, cz, q)) continue;
-        // an end of this piece pokes into an opening: keep halving towards the solid end so doorways get their full width
-        for (let trims = 0; trims < 2; trims++) {
-          const [e0x, e0z] = at(c0), [e1x, e1z] = at(c1);
-          const b0 = blocked(e0x, midY, e0z, q), b1 = blocked(e1x, midY, e1z, q);
-          if (b0 === b1) break;
-          if (b0) c0 = (c0 + c1) / 2; else c1 = (c0 + c1) / 2;
-          [cx, cz] = at((c0 + c1) / 2);
-          if (blocked(cx, midY, cz, q)) { c0 = c1; break; }
+        const [ccx, ccz] = at((k + 0.5) / n);
+        // scan the wall's height in 0.5 m slices so openings at ANY height (upper floors, windows) clear the
+        // collision at their level — and lintels above doors / sills below windows still block correctly
+        const runs = []; let run = null;
+        for (let y = 0.25; y < sy; y += 0.5) {
+          if (!blocked(ccx, a.y + y, ccz, q)) { if (!run) run = [y, y]; else run[1] = y; }
+          else if (run) { runs.push(run); run = null; }
         }
-        if (c1 - c0 < 1e-4) continue;
-        const hx = (c1 - c0) * len / 2 + 0.04;
-        segs.push({ cx, cz, rot, hx, hz: Math.max(t / 2, 0.12), bottom: a.y, top: a.y + sy });
+        if (run) runs.push(run);
+        for (const [y0, y1] of runs) {
+          const midY = a.y + (y0 + y1) / 2;
+          let c0 = k / n, c1 = (k + 1) / n, cx = ccx, cz = ccz, dead = false;
+          // an end of this piece pokes into an opening: keep halving towards the solid end so doorways get their full width
+          for (let trims = 0; trims < 2; trims++) {
+            const [e0x, e0z] = at(c0), [e1x, e1z] = at(c1);
+            const b0 = blocked(e0x, midY, e0z, q), b1 = blocked(e1x, midY, e1z, q);
+            if (b0 === b1) break;
+            if (b0) c0 = (c0 + c1) / 2; else c1 = (c0 + c1) / 2;
+            [cx, cz] = at((c0 + c1) / 2);
+            if (blocked(cx, midY, cz, q)) { dead = true; break; }
+          }
+          if (dead || c1 - c0 < 1e-4) continue;
+          const hx = (c1 - c0) * len / 2 + 0.04;
+          segs.push({ cx, cz, rot, hx, hz: Math.max(t / 2, 0.12), bottom: a.y + Math.max(0, y0 - 0.25), top: a.y + Math.min(sy, y1 + 0.25) });
+        }
       }
     }
   }
@@ -379,18 +388,21 @@ export class World {
     else h = this.sampleHeight(x, z);
     return h;
   }
-  // the inside of a hollow at a world point: { floor, ceiling } of the (lowest) part over it, or null
-  hollowInteriorAt(o, x, z) {
+  // the inside of a hollow at a world point: { floor, ceiling } of the part over it, or null.
+  // refY (a world height, e.g. where the user clicked) picks the right storey in a stacked building:
+  // the part whose floor is highest while still at or below refY; without refY, the lowest part.
+  hollowInteriorAt(o, x, z, refY = null) {
     const H = this.meshes.get(o.id)?.userData.hollow; if (!H) return null;
     const c = Math.cos(o.rot || 0), s = Math.sin(o.rot || 0), dx = x - o.pos[0], dz = z - o.pos[2];
     const lx = dx * c - dz * s, lz = dx * s + dz * c;
-    let best = null;
+    let best = null, lowest = null;
     for (const q of H.parts) {
       _v.set(lx, 0, lz).applyMatrix4(q.inv); if (!insideUnit(q.kind, _v.x, 0.5, _v.z)) continue;
       const floor = o.pos[1] + q.p.pos[1] + H.t, ceiling = o.pos[1] + q.p.pos[1] + q.p.scale[1] - H.t;
-      if (!best || floor < best.floor) best = { floor, ceiling };
+      if (!lowest || floor < lowest.floor) lowest = { floor, ceiling };
+      if (refY !== null && floor <= refY + 0.55 && (!best || floor > best.floor)) best = { floor, ceiling };
     }
-    return best;
+    return best || lowest;
   }
   syncTransform(o) {
     const g = this.meshes.get(o.id); if (!g) return;

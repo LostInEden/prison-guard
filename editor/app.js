@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, builtAtSize, starterWorld, emptyWorld, uid } from './world.js?v=11';
-import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=11';
+import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, builtAtSize, starterWorld, emptyWorld, uid } from './world.js?v=12';
+import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=12';
 
 const $ = (id) => document.getElementById(id);
 const clamp = THREE.MathUtils.clamp;
@@ -387,7 +387,7 @@ function placeObject(type, hit, e) {
   let note = null;
   if (type === 'door' && hit.object?.type === 'doorway') note = fitDoorToDoorway(def, hit);
   else if (type === 'wall' && hit.object?.type === 'hollow' && hit.normal?.y > 0.7) {   // a wall on a hollow's floor: floor-to-ceiling
-    const inside = world.hollowInteriorAt(hit.object, hit.point.x, hit.point.z);
+    const inside = world.hollowInteriorAt(hit.object, hit.point.x, hit.point.z, hit.point.y);
     if (inside) { def.scale = [DEFAULTS.wall.scale[0], Math.max(0.5, inside.ceiling - hit.point.y), DEFAULTS.wall.scale[2]]; def.pos[1] = inside.floor; note = 'Wall sized floor to ceiling'; }
   }
   const o = world.addObject(def);
@@ -400,7 +400,7 @@ function placeObject(type, hit, e) {
 function beginWallDraw(hit) {
   let y = hit.point.y, h = DEFAULTS.wall.scale[1], hollow = null, grounded = !!hit.terrain;
   if (hit.object?.type === 'hollow' && hit.normal?.y > 0.7) {
-    const inside = world.hollowInteriorAt(hit.object, hit.point.x, hit.point.z);
+    const inside = world.hollowInteriorAt(hit.object, hit.point.x, hit.point.z, hit.point.y);
     if (inside) { y = inside.floor; h = Math.max(0.5, inside.ceiling - inside.floor); hollow = hit.object; grounded = false; }
   }
   ed.wallDrag = { p0: hit.point.clone().setY(y), p1: hit.point.clone().setY(y), y, h, hollow, grounded, plane: new THREE.Plane(new THREE.Vector3(0, 1, 0), -y) };
@@ -472,7 +472,7 @@ function finishOpening() {
   let o;
   if (r.width < 0.3 || r.height < 0.3) o = placeDoorway({ ...d.hit, object: h });   // just a click: standard door-sized opening
   else {
-    const inside = world.hollowInteriorAt(h, r.cx - d.n.x * t, r.cz - d.n.z * t) || world.hollowInteriorAt(h, r.cx, r.cz);
+    const inside = world.hollowInteriorAt(h, r.cx - d.n.x * t, r.cz - d.n.z * t, r.bottom + 0.2) || world.hollowInteriorAt(h, r.cx, r.cz, r.bottom + 0.2);
     const floor = inside ? inside.floor : h.pos[1] + t;
     let bottom = Math.max(r.bottom, floor), top = Math.min(r.bottom + r.height, inside ? inside.ceiling - 0.05 : Infinity);
     const frame = bottom - floor < 0.35;   // drawn from the floor: a door; higher up: a window
@@ -495,7 +495,7 @@ function placeDoorway(hit) {
   if (n.lengthSq() < 0.3) { toast('Click the side of a wall, not the roof or floor'); return null; }
   n.normalize();
   const t = h.thickness, cx = hit.point.x - n.x * t / 2, cz = hit.point.z - n.z * t / 2;   // middle of the wall
-  const inside = world.hollowInteriorAt(h, cx - n.x * t, cz - n.z * t) || world.hollowInteriorAt(h, cx, cz);
+  const inside = world.hollowInteriorAt(h, cx - n.x * t, cz - n.z * t, hit.point.y) || world.hollowInteriorAt(h, cx, cz, hit.point.y);
   const floor = inside ? inside.floor : h.pos[1] + t;
   const height = inside ? Math.min(DEFAULTS.doorway.scale[1], inside.ceiling - floor - 0.05) : DEFAULTS.doorway.scale[1];
   return world.addObject({ type: 'doorway', pos: [cx, floor, cz], rot: Math.atan2(n.x, n.z), scale: [DEFAULTS.doorway.scale[0], height, t + 0.4], target: h.id, grounded: false });
