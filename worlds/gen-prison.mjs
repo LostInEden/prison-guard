@@ -62,8 +62,8 @@ const inner = W.map(([x, z]) => [Math.round((x - 10) * 0.955 + 10), Math.round((
 fence('Inner fence', [[14, 134], inner[6], inner[5], inner[4], inner[3], inner[2], inner[1], inner[0], inner[8], inner[7], [-32, 133]]);
 
 // ---------------------------------------------------------------- 4–6  gates and roads
-const gatehouse = hollow('Gatehouse', -9, 139, 40, 6, 18, 0, '#8a8d88'); doorway(gatehouse, 'n', 0.45, 6, 4.5); doorway(gatehouse, 's', 0.45, 6, 4.5);
-const innerGate = hollow('Inner gate', -2, 92, 16, 5, 17, 0, '#8a8d88'); doorway(innerGate, 'n', 0.25, 6, 4.2); doorway(innerGate, 's', 0.25, 6, 4.2);
+const gatehouse = hollow('Gatehouse', -9, 139, 40, 7, 18, 0, '#8a8d88'); doorway(gatehouse, 'n', 0.45, 6, 4.5); doorway(gatehouse, 's', 0.45, 6, 4.5);
+const innerGate = hollow('Inner gate', -2, 92, 16, 6, 17, 0, '#8a8d88'); doorway(innerGate, 'n', 0.25, 6, 4.2); doorway(innerGate, 's', 0.25, 6, 4.2);
 path('Spine road', [[0, 160], [0, -65]], 6);
 path('Entrance road', [[0, 160], [0, 185]], 8);
 path('Entrance loop', [[-60, 205], [-60, 185], [60, 185], [60, 205]], 8);
@@ -74,14 +74,14 @@ path('Cell block road', [[0, 72], [60, 72]], 4);
 path('South-west road', [[0, 108], [-40, 108]], 4);
 
 // ---------------------------------------------------------------- 7–15  buildings
-const admin = hollow('Admin', -26, -85, 34, 10, 63); doorway(admin, 'e');
-const ne = hollow('North-east block', 133, -130, 34, 7, 90); doorway(ne, 'w');
-const nw = hollow('North-west block', -80, -80, 76, 6, 20, deg(45)); doorway(nw, 's');
-const west = hollow('West building', -113, -9, 66, 7, 56); doorway(west, 'e');
-[[-106, 60], [-90, 76], [-74, 92]].forEach(([x, z], i) => { const b = hollow(`Cell block ${String.fromCharCode(65 + i)}`, x, z, 84, 6, 16, deg(45)); doorway(b, 'e'); });
-const central = hollow('Central block', -22, 50, 20, 6, 66); doorway(central, 'e');
-[72, 92, 112, 138].forEach((x, i) => { const b = hollow(`East block ${i + 1}`, x, 47, 16, 6, 40); doorway(b, 's'); });
-const util = hollow('Utility', 73, 93, 109, 6, 26); doorway(util, 'n');
+const admin = hollow('Admin', -26, -85, 34, 11, 63); doorway(admin, 'e');
+const ne = hollow('North-east block', 133, -130, 34, 8, 90); doorway(ne, 'w');
+const nw = hollow('North-west block', -80, -80, 76, 8, 20, deg(45)); doorway(nw, 's');
+const west = hollow('West building', -113, -9, 66, 8, 56); doorway(west, 'e');
+[[-106, 60], [-90, 76], [-74, 92]].forEach(([x, z], i) => { const b = hollow(`Cell block ${String.fromCharCode(65 + i)}`, x, z, 84, 8, 16, deg(45)); doorway(b, 'e'); });
+const central = hollow('Central block', -22, 50, 20, 8, 66); doorway(central, 'e');
+[72, 92, 112, 138].forEach((x, i) => { const b = hollow(`East block ${i + 1}`, x, 47, 16, 8, 40); doorway(b, 's'); });
+const util = hollow('Utility', 73, 93, 109, 8, 26); doorway(util, 'n');
 for (const x of [67, 78, 90, 101]) cylinder('Tank', x, 115, 12, 8, { color: '#9aa0a8' });
 
 // ---------------------------------------------------------------- 9  yards
