@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, builtAtSize, starterWorld, emptyWorld, uid } from './world.js?v=9';
-import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=9';
+import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, builtAtSize, starterWorld, emptyWorld, uid } from './world.js?v=10';
+import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=10';
 
 const $ = (id) => document.getElementById(id);
 const clamp = THREE.MathUtils.clamp;
@@ -113,13 +113,40 @@ function applyOneSidedResize() {
   const r = selected.rot || 0, c = Math.cos(r), s = Math.sin(r);
   g.position.set(dragStart.pos.x + lx * c + lz * s, g.position.y, dragStart.pos.z - lx * s + lz * c);
 }
+// when several things are selected, dragging the gizmo moves them all by the same amount
+function moveExtras(final) {
+  if (!dragStart || !dragStart.extras || !dragStart.extras.size || gizmo.mode !== 'translate' || !selected) return;
+  const d = [selected.pos[0] - dragStart.dataPos[0], selected.pos[1] - dragStart.dataPos[1], selected.pos[2] - dragStart.dataPos[2]];
+  const lifting = gizmoLifting();
+  for (const [id, st] of dragStart.extras) {
+    const o = world.getObject(id); if (!o) continue;
+    const m = world.meshes.get(id);
+    if (LINE_TYPES.includes(o.type)) {   // paths and fences live in their points, not pos
+      if (final) { o.points = st.points.map(([x, z]) => [x + d[0], z + d[2]]); if (m) m.position.set(0, 0, 0); world.rebuildObject(id); }
+      else if (m) m.position.set(d[0], 0, d[2]);
+      continue;
+    }
+    o.pos = [st.pos[0] + d[0], st.pos[1] + d[1], st.pos[2] + d[2]];
+    if (o.grounded) {
+      if (lifting && Math.abs(d[1]) > 0.02 && o.type !== 'light') o.grounded = false;
+      else o.pos[1] = world.groundY(o) + (o.offset || 0);
+    }
+    world.syncTransform(o);
+    if (final && o.type === 'light' && o.grounded) world.rebuildObject(id);
+  }
+}
 gizmo.addEventListener('dragging-changed', (e) => {
   orbit.enabled = !e.value;
-  if (e.value && selected) { const g = world.meshes.get(selected.id); dragStart = g ? { scale: g.scale.clone(), pos: g.position.clone() } : null; }
-  if (!e.value && selected) { applyOneSidedResize(); world.pullTransform(selected, gizmoLifting(), true); gizmo.attach(world.meshes.get(selected.id)); refreshSelectionBox(); pushUndo(); renderPanel(); }
+  if (e.value && selected) {
+    const g = world.meshes.get(selected.id);
+    const extras = new Map();
+    for (const o of selectedObjects()) if (o !== selected) extras.set(o.id, LINE_TYPES.includes(o.type) ? { points: o.points.map(p => [...p]) } : { pos: [...o.pos] });
+    dragStart = g ? { scale: g.scale.clone(), pos: g.position.clone(), dataPos: [...(selected.pos || [0, 0, 0])], extras } : null;
+  }
+  if (!e.value && selected) { applyOneSidedResize(); world.pullTransform(selected, gizmoLifting(), true); moveExtras(true); gizmo.attach(world.meshes.get(selected.id)); refreshSelectionBox(); pushUndo(); renderPanel(); }
   if (!e.value) dragStart = null;
 });
-gizmo.addEventListener('objectChange', () => { if (selected) { applyOneSidedResize(); world.pullTransform(selected, gizmoLifting()); refreshSelectionBox(); } });
+gizmo.addEventListener('objectChange', () => { if (selected) { applyOneSidedResize(); world.pullTransform(selected, gizmoLifting()); moveExtras(false); refreshSelectionBox(); } });
 function setGizmoMode(mode) {
   gizmo.setMode(mode);
   // only yaw is stored, so hide the X/Z rotation rings — they were easy to grab by mistake and did nothing useful
@@ -871,7 +898,7 @@ function renderMultiPanel(root) {
     root.appendChild(el('div', { class: 'note', text: 'Joins these into one shell with walls, floor and roof of the thickness you choose afterwards. Push pieces into each other by more than the wall thickness so their insides connect.' }));
   } else if (hollow) root.appendChild(el('div', { class: 'note', text: 'To carve: click the hollow last (so the gizmo is on it), with the cutter boxes also selected.' }));
   else root.appendChild(el('div', { class: 'note', text: 'Only boxes, walls, cylinders and spheres can be hollowed.' }));
-  root.appendChild(el('div', { class: 'note', text: 'Shift+click adds or removes. The gizmo moves the last one clicked.' }));
+  root.appendChild(el('div', { class: 'note', text: 'Shift+click adds or removes. Dragging the move gizmo moves everything selected together.' }));
   root.appendChild(el('div', { class: 'row2', style: 'margin-top:6px' }, [
     el('button', { text: 'SIT ON GROUND', title: 'End', onclick: sitOnGround }),
     el('button', { text: 'DELETE ALL', onclick: deleteSelected }),
