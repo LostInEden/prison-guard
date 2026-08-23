@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, starterWorld, emptyWorld, uid } from './world.js';
-import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js';
+import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, starterWorld, emptyWorld, uid } from './world.js?v=3';
+import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=3';
 
 const $ = (id) => document.getElementById(id);
 const clamp = THREE.MathUtils.clamp;
