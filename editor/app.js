@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, builtAtSize, starterWorld, emptyWorld, uid } from './world.js?v=10';
-import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=10';
+import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, builtAtSize, starterWorld, emptyWorld, uid } from './world.js?v=11';
+import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=11';
 
 const $ = (id) => document.getElementById(id);
 const clamp = THREE.MathUtils.clamp;
@@ -1046,7 +1046,7 @@ $('help').addEventListener('click', (e) => { if (e.target === $('help')) showHel
 // =====================================================================
 const plc = new PointerLockControls(playCam, renderer.domElement);
 Object.defineProperty(plc, 'pointerSpeed', { get: () => prefs.lookSpeed, set: () => {} });   // play-mode look speed follows the EDITOR preference
-const player = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), radius: 0.38, height: 1.62, feet: 0, bob: 0, inventory: [] };
+const player = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), radius: 0.34, height: 1.62, feet: 0, bob: 0, inventory: [] };
 const flashPivot = new THREE.Group(); playCam.add(flashPivot);
 const flashlight = new THREE.SpotLight(0xfff3d9, 0, 38, 0.58, 0.75, 1.7);
 flashlight.target.position.set(0, 0, -1); flashlight.castShadow = true; flashlight.shadow.mapSize.set(1024, 1024); flashlight.shadow.camera.far = 38; flashlight.shadow.bias = -0.0025;
@@ -1125,14 +1125,19 @@ function updatePlayer(dt) {
   player.pos.addScaledVector(player.vel, dt);
   // doors change, so refresh colliders each frame (cheap for editor-sized worlds)
   colliders = world.colliders();
+  // step checks measure from the ground actually underfoot, not the eased camera height — otherwise ramps block their own tops
+  // the feet have area, not a point: stand on the highest ground under a small footprint, so narrow cracks
+  // between badly-joined ramps and floors are simply spanned
+  const groundUnderfoot = () => Math.max(...[[0, 0], [0.25, 0], [-0.25, 0], [0, 0.25], [0, -0.25]].map(([ox, oz]) => world.standHeight(player.pos.x + ox, player.pos.z + oz, player.feet)));
+  const standRef = Math.max(player.feet, groundUnderfoot());
   for (let i = 0; i < 2; i++) for (const c of colliders) {
     if (Math.abs(c.cx - player.pos.x) > c.hx + c.hz + 3 || Math.abs(c.cz - player.pos.z) > c.hx + c.hz + 3) continue;
-    if (c.top <= player.feet + 0.55 || c.bottom > player.feet + player.height) continue;   // step onto low things / walk under high things
+    if (c.top <= standRef + 0.75 || c.bottom > player.feet + player.height) continue;   // step onto low things / walk under high things
     pushOutOBB(player.pos, c, player.radius);
   }
   const moved = player.pos.distanceTo(before), speed = moved / Math.max(dt, 1e-4);
-  const target = world.standHeight(player.pos.x, player.pos.z, player.feet);
-  player.feet += (target - player.feet) * Math.min(1, dt * 12);
+  const target = groundUnderfoot();
+  player.feet += (target - player.feet) * Math.min(1, dt * (target > player.feet ? 25 : 12));   // climb quickly, settle gently
   player.bob += dt * (running ? 11 : 8) * Math.min(1, speed / 3);
   playCam.position.set(player.pos.x, player.feet + player.height + Math.sin(player.bob) * 0.035 * Math.min(1, speed / 3), player.pos.z);
   sky.position.set(player.pos.x, 0, player.pos.z);

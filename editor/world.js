@@ -161,10 +161,24 @@ function hollowSegments(o) {
       a.set(pts[i][0], 0, pts[i][1]).applyMatrix4(q.M); b.set(pts[i + 1][0], 0, pts[i + 1][1]).applyMatrix4(q.M);
       const len = Math.hypot(b.x - a.x, b.z - a.z); if (len < 1e-4) continue;
       const n = Math.max(1, Math.ceil(len / 0.6)), dx = (b.x - a.x) / len, dz = (b.z - a.z) / len, rot = Math.atan2(-dz, dx);
+      const midY = a.y + Math.min(1, sy / 2);
       for (let k = 0; k < n; k++) {
-        const cx = a.x + dx * len * (k + 0.5) / n, cz = a.z + dz * len * (k + 0.5) / n;
-        if (blocked(cx, a.y + Math.min(1, sy / 2), cz, q)) continue;
-        segs.push({ cx, cz, rot, hx: len / n / 2 + 0.05, hz: Math.max(t / 2, 0.12), bottom: a.y, top: a.y + sy });
+        let c0 = k / n, c1 = (k + 1) / n;
+        const at = (f) => [a.x + dx * len * f, a.z + dz * len * f];
+        let [cx, cz] = at((c0 + c1) / 2);
+        if (blocked(cx, midY, cz, q)) continue;
+        // an end of this piece pokes into an opening: keep halving towards the solid end so doorways get their full width
+        for (let trims = 0; trims < 2; trims++) {
+          const [e0x, e0z] = at(c0), [e1x, e1z] = at(c1);
+          const b0 = blocked(e0x, midY, e0z, q), b1 = blocked(e1x, midY, e1z, q);
+          if (b0 === b1) break;
+          if (b0) c0 = (c0 + c1) / 2; else c1 = (c0 + c1) / 2;
+          [cx, cz] = at((c0 + c1) / 2);
+          if (blocked(cx, midY, cz, q)) { c0 = c1; break; }
+        }
+        if (c1 - c0 < 1e-4) continue;
+        const hx = (c1 - c0) * len / 2 + 0.04;
+        segs.push({ cx, cz, rot, hx, hz: Math.max(t / 2, 0.12), bottom: a.y, top: a.y + sy });
       }
     }
   }
@@ -665,7 +679,7 @@ export class World {
   // height of walkable surfaces (terrain + tops of low solids you can stand on + ramps)
   standHeight(x, z, feetY) {
     let h = this.sampleHeight(x, z);
-    const stand = (top) => { if (top <= feetY + 0.55 && top > h) h = top; };
+    const stand = (top) => { if (top <= feetY + 0.75 && top > h) h = top; };   // generous step height: review walks should not snag on lips and thresholds
     for (const o of this.data.objects) {
       // world -> object local (rotation about Y by o.rot)
       const c = Math.cos(o.rot || 0), s = Math.sin(o.rot || 0);
