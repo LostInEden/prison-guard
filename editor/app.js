@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, starterWorld, emptyWorld, uid } from './world.js?v=8';
-import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=8';
+import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, builtAtSize, starterWorld, emptyWorld, uid } from './world.js?v=9';
+import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=9';
 
 const $ = (id) => document.getElementById(id);
 const clamp = THREE.MathUtils.clamp;
@@ -102,8 +102,24 @@ gizmo.setSize(0.8);
 scene.add(gizmo.getHelper());
 // dragging the Y arrow (or a plane that includes Y) lifts a grounded object off the ground
 const gizmoLifting = () => gizmo.mode === 'translate' && /Y/.test(gizmo.axis || '') && gizmo.axis !== 'XYZ';
-gizmo.addEventListener('dragging-changed', (e) => { orbit.enabled = !e.value; if (!e.value && selected) { world.pullTransform(selected, gizmoLifting(), true); gizmo.attach(world.meshes.get(selected.id)); refreshSelectionBox(); pushUndo(); renderPanel(); } });
-gizmo.addEventListener('objectChange', () => { if (selected) { world.pullTransform(selected, gizmoLifting()); refreshSelectionBox(); } });
+let dragStart = null;   // { scale, pos } of the mesh when a gizmo drag begins (for Alt one-sided resize)
+// Alt while resizing: only the side the handle points at moves — the opposite face stays planted.
+// Shapes already grow upward from their base, so Y needs no compensation.
+function applyOneSidedResize() {
+  if (!dragStart || gizmo.mode !== 'scale' || !(keys.AltLeft || keys.AltRight) || !selected) return;
+  const g = world.meshes.get(selected.id); if (!g || !selected.scale) return;
+  const unit = builtAtSize(selected) ? selected.scale : [1, 1, 1];   // built-at-size meshes use scale as a factor
+  const lx = (g.scale.x - dragStart.scale.x) * unit[0] / 2, lz = (g.scale.z - dragStart.scale.z) * unit[2] / 2;
+  const r = selected.rot || 0, c = Math.cos(r), s = Math.sin(r);
+  g.position.set(dragStart.pos.x + lx * c + lz * s, g.position.y, dragStart.pos.z - lx * s + lz * c);
+}
+gizmo.addEventListener('dragging-changed', (e) => {
+  orbit.enabled = !e.value;
+  if (e.value && selected) { const g = world.meshes.get(selected.id); dragStart = g ? { scale: g.scale.clone(), pos: g.position.clone() } : null; }
+  if (!e.value && selected) { applyOneSidedResize(); world.pullTransform(selected, gizmoLifting(), true); gizmo.attach(world.meshes.get(selected.id)); refreshSelectionBox(); pushUndo(); renderPanel(); }
+  if (!e.value) dragStart = null;
+});
+gizmo.addEventListener('objectChange', () => { if (selected) { applyOneSidedResize(); world.pullTransform(selected, gizmoLifting()); refreshSelectionBox(); } });
 function setGizmoMode(mode) {
   gizmo.setMode(mode);
   // only yaw is stored, so hide the X/Z rotation rings — they were easy to grab by mistake and did nothing useful
@@ -518,6 +534,7 @@ function updatePathPreview() {
 const keys = {};
 window.addEventListener('keydown', (e) => {
   keys[e.code] = true;
+  if (e.altKey && ed.mode === 'edit') e.preventDefault();   // Alt = one-sided resize modifier; keep the browser menu closed
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (ed.mode === 'edit' && e.code.startsWith('Arrow')) e.preventDefault();   // arrows fly the camera; keep them off the UI
   if (ed.mode === 'play') { onPlayKey(e); return; }
