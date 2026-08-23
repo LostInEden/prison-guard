@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Night Shift World Editor Cheat Sheet</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;600&display=swap">
+<style>
+  :root {
+    --paper: #F2F3F0; --ink: #15181C; --muted: #6B7178; --rule: #C9CDCF; --chip: #E3E6E2; --chip-ink: #1F2327; --accent: #C98A12; --accent-ink: #7A520A; --band: #15181C; --band-ink: #F2F3F0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --paper: #0F1216; --ink: #E6E8E6; --muted: #9AA3A8; --rule: #2A3036; --chip: #1E2429; --chip-ink: #F3F4F2; --accent: #FFD25A; --accent-ink: #FFD25A; --band: #FFD25A; --band-ink: #15181C; }
+  }
+  :root[data-theme="dark"] { --paper: #0F1216; --ink: #E6E8E6; --muted: #9AA3A8; --rule: #2A3036; --chip: #1E2429; --chip-ink: #F3F4F2; --accent: #FFD25A; --accent-ink: #FFD25A; --band: #FFD25A; --band-ink: #15181C; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif; font-size: 12px; line-height: 1.45; }
+  .sheet { max-width: 1080px; margin: 0 auto; padding: 28px 32px 36px; }
+  .band { background: var(--band); color: var(--band-ink); display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 12px 18px; margin-bottom: 18px; }
+  .band h1 { margin: 0; font-family: "Barlow Condensed", "Arial Narrow", sans-serif; font-weight: 700; font-size: 30px; letter-spacing: .08em; text-transform: uppercase; line-height: 1; }
+  .band h1 small { font-weight: 600; letter-spacing: .18em; font-size: 12px; display: block; margin-bottom: 6px; opacity: .8; }
+  .band .url { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 12px; opacity: .9; text-align: right; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px 26px; }
+  @media (max-width: 820px) { .grid { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+  section h2 { font-family: "Barlow Condensed", "Arial Narrow", sans-serif; font-weight: 700; font-size: 16px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent-ink); margin: 0 0 6px; padding-bottom: 4px; border-bottom: 2px solid var(--accent); text-wrap: balance; }
+  section h2 span { color: var(--muted); font-weight: 600; letter-spacing: .06em; font-size: 11px; margin-left: 8px; text-transform: none; }
+  dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; align-items: baseline; }
+  dt { white-space: nowrap; }
+  dd { margin: 0; color: var(--ink); }
+  dd em { color: var(--muted); font-style: normal; }
+  kbd { font-family: "IBM Plex Mono", Consolas, monospace; font-weight: 500; font-size: 10.5px; background: var(--chip); color: var(--chip-ink); border: 1px solid var(--rule); border-bottom-width: 2px; border-radius: 3px; padding: 0 5px; line-height: 16px; display: inline-block; white-space: nowrap; }
+  b { font-weight: 600; }
+  p { margin: 0 0 5px; }
+  .steps { margin: 0; padding-left: 16px; }
+  .steps li { margin-bottom: 3px; }
+  .foot { margin-top: 20px; border-top: 1px solid var(--rule); padding-top: 10px; display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--muted); }
+  .foot span { white-space: nowrap; }
+  @media print {
+    @page { size: A4 landscape; margin: 10mm; }
+    :root { --paper: #fff; --ink: #111; --muted: #555; --rule: #bbb; --chip: #eee; --chip-ink: #111; --accent: #9a6a0c; --accent-ink: #6b4a08; --band: #111; --band-ink: #fff; }
+    body { font-size: 10.5px; }
+    .sheet { padding: 0; max-width: none; }
+    .grid { gap: 10px 18px; }
+    .band { -webkit-print-color-adjust: exact; print-color-adjust: exact; margin-bottom: 10px; }
+    kbd, section h2 { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <div class="band">
+    <h1><small>Night Shift</small>World editor cheat sheet</h1>
+    <div class="url">lostineden.github.io/prison-guard/editor/<br>room code from Matthew · press <b>?</b> in the editor for this</div>
+  </div>
+
+  <div class="grid">
+    <section>
+      <h2>Camera</h2>
+      <dl>
+        <dt><kbd>Right-drag</kbd></dt><dd>look around</dd>
+        <dt><kbd>Middle-drag</kbd></dt><dd>slide sideways</dd>
+        <dt><kbd>Wheel</kbd></dt><dd>zoom</dd>
+        <dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>fly · <kbd>E</kbd> up · <kbd>C</kbd> down · hold <kbd>Shift</kbd> = fast</dd>
+        <dt><kbd>F</kbd></dt><dd>jump the camera to the selected thing</dd>
+        <dt><kbd>X</kbd></dt><dd>hide / show all roofs <em>(see inside rooms)</em></dd>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Placing shapes <span>left bar</span></h2>
+      <p>Pick <b>Box</b> <kbd>B</kbd>, Cylinder, Sphere, Ramp or Wall, then <b>click</b> the ground or any surface — shapes stack on each other.</p>
+      <dl>
+        <dt><kbd>R</kbd> / <kbd>Shift+R</kbd></dt><dd>turn the preview 15°</dd>
+        <dt><kbd>,</kbd> / <kbd>.</kbd></dt><dd>turn it 90°</dd>
+        <dt><kbd>Shift</kbd>+click</dt><dd>snap to a 0.5 m grid</dd>
+        <dt><kbd>Esc</kbd></dt><dd>back to Select <kbd>Q</kbd></dd>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Editing a shape</h2>
+      <p><b>Click</b> it. Then:</p>
+      <dl>
+        <dt><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></dt><dd>move / rotate / resize handles <em>(hold <kbd>Shift</kbd> to snap)</em></dd>
+        <dt>Right panel</dt><dd>exact size, rotation, colour, <b>corner radius</b> (rounded box)</dd>
+        <dt><kbd>PgUp</kbd> <kbd>PgDn</kbd></dt><dd>lift / lower <em>(<kbd>Shift</kbd> = 1 m)</em></dd>
+        <dt><kbd>End</kbd></dt><dd>sit it on the ground, never sunk in</dd>
+        <dt><kbd>Ctrl+D</kbd></dt><dd>copy</dd>
+        <dt><kbd>Delete</kbd></dt><dd>remove</dd>
+        <dt><kbd>Ctrl+Z</kbd></dt><dd>undo</dd>
+        <dt><kbd>Shift</kbd>+click</dt><dd>select several at once</dd>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Rooms <span>hollow</span></h2>
+      <ol class="steps">
+        <li>Select a shape and tick <b>Hollow</b> — it gets walls, a floor and a roof you can walk into. Untick for the solid back.</li>
+        <li>Several shapes into one building: <kbd>Shift</kbd>+click them, press <kbd>G</kbd>. Push them into each other so the insides join.</li>
+        <li><kbd>X</kbd> hides roofs. A <b>Wall</b> dropped on a room's floor sizes itself floor-to-ceiling.</li>
+      </ol>
+      <p><em>Wall thickness is in the panel. Resizing a room with the handles resizes the whole room.</em></p>
+    </section>
+
+    <section>
+      <h2>Doors &amp; windows</h2>
+      <dl>
+        <dt><b>Opening</b> <kbd>O</kbd></dt><dd><b>Press</b> on a wall, <b>drag</b> a rectangle, <b>let go</b> — it cuts through. From the floor = door frame; higher up = window. A plain click = door-sized opening.</dd>
+        <dt>Afterwards</dt><dd>move or resize the opening and the hole follows; delete it and the wall heals.</dd>
+        <dt><b>Door</b></dt><dd>click inside an opening to hang a door. The half you click is the hinge side; it opens inward.</dd>
+        <dt>Door panel</dt><dd>locked + <b>Key name</b> → needs a pickup with that name</dd>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Outside</h2>
+      <dl>
+        <dt><b>Path</b> <kbd>H</kbd></dt><dd>click points for a road, <b>double-click</b> or <kbd>Enter</kbd> to finish, <kbd>Esc</kbd> cancels</dd>
+        <dt><b>Fence</b> <kbd>N</kbd></dt><dd>same — corner points; chain-link or rails</dd>
+        <dt><b>Tree brush</b></dt><dd>drag to scatter · <kbd>[</kbd> <kbd>]</kbd> brush size</dd>
+        <dt><b>Terrain</b> <kbd>T</kbd></dt><dd>drag to raise / lower / smooth / flatten · <b>RESET</b> paints it back flat · <b>RESET ALL</b> button</dd>
+        <dt>Map size</dt><dd>drag the yellow edge handles</dd>
+        <dt><b>Light</b></dt><dd>ground = lamp post · wall or ceiling = bare light</dd>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Play it</h2>
+      <dl>
+        <dt><kbd>P</kbd> / <b>▶ PLAY</b></dt><dd>start at the spawn marker <em>(Spawn tool <kbd>S</kbd> moves it)</em></dd>
+        <dt><b>PLAY HERE</b></dt><dd>start where the camera is looking</dd>
+        <dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>walk · <kbd>Shift</kbd> run</dd>
+        <dt><kbd>F</kbd></dt><dd>open doors, pick things up, flip switches</dd>
+        <dt><kbd>L</kbd></dt><dd>torch on / off · hold <kbd>Right mouse</kbd> to aim it</dd>
+        <dt><kbd>Esc</kbd></dt><dd>back to the editor</dd>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Saving &amp; sharing</h2>
+      <dl>
+        <dt><b>SAVE</b> <kbd>Ctrl+S</kbd></dt><dd>saves online for the team under the name in the top bar. First time: your name + the room code.</dd>
+        <dt><b>WORLDS</b></dt><dd>everyone's worlds — <b>LOAD</b> one, or <b>HISTORY</b> to go back to an earlier version. Nothing is ever overwritten.</dd>
+        <dt><b>EXPORT</b> / <b>IMPORT</b></dt><dd>download / load a .json file</dd>
+        <dt>Autosave</dt><dd>to this browser every 30 s — a local safety net only</dd>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Tips</h2>
+      <ul class="steps">
+        <li>Build rough first: boxes at roughly the right size, hollow them, cut openings, walk it. Detail comes later in Unreal.</li>
+        <li>Name your world in the top bar before the first SAVE.</li>
+        <li>If you can't select something, press <kbd>X</kbd> — the roof was probably in the way.</li>
+        <li>Everything is undoable with <kbd>Ctrl+Z</kbd>, including terrain and openings.</li>
+      </ul>
+    </section>
+  </div>
+
+  <div class="foot">
+    <span><kbd>Q</kbd> select</span><span><kbd>B</kbd> box</span><span><kbd>O</kbd> opening</span><span><kbd>G</kbd> hollow</span><span><kbd>X</kbd> roofs</span><span><kbd>H</kbd> path</span><span><kbd>N</kbd> fence</span><span><kbd>T</kbd> terrain</span><span><kbd>S</kbd> spawn</span><span><kbd>P</kbd> play</span><span><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> move / rotate / resize</span><span><kbd>R</kbd> <kbd>,</kbd> <kbd>.</kbd> rotate</span><span><kbd>PgUp</kbd><kbd>PgDn</kbd> lift</span><span><kbd>End</kbd> sit on ground</span><span><kbd>Ctrl+D</kbd> copy</span><span><kbd>Ctrl+Z</kbd> undo</span><span><kbd>Ctrl+S</kbd> save</span><span><kbd>?</kbd> help</span>
+  </div>
+</div>
+</body>
+</html>
