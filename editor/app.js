@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, starterWorld, emptyWorld, uid } from './world.js?v=6';
-import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=6';
+import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, starterWorld, emptyWorld, uid } from './world.js?v=7';
+import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=7';
 
 const $ = (id) => document.getElementById(id);
 const clamp = THREE.MathUtils.clamp;
@@ -70,7 +70,7 @@ orbit.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.R
 orbit.maxPolarAngle = Math.PI * 0.495;
 orbit.target.set(0, 0, 0);
 // editor preferences (per browser, not part of the world file)
-const prefs = Object.assign({ orbitSpeed: 1, lookSpeed: 1, author: '', room: '' }, JSON.parse(localStorage.getItem('ns-editor-prefs') || '{}'));
+const prefs = Object.assign({ orbitSpeed: 1, lookSpeed: 1, flySpeed: 1, author: '', room: '' }, JSON.parse(localStorage.getItem('ns-editor-prefs') || '{}'));
 function applyPrefs() { orbit.rotateSpeed = prefs.orbitSpeed; orbit.panSpeed = Math.max(0.5, prefs.orbitSpeed); localStorage.setItem('ns-editor-prefs', JSON.stringify(prefs)); }
 applyPrefs();
 
@@ -519,6 +519,7 @@ const keys = {};
 window.addEventListener('keydown', (e) => {
   keys[e.code] = true;
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (ed.mode === 'edit' && e.code.startsWith('Arrow')) e.preventDefault();   // arrows fly the camera; keep them off the UI
   if (ed.mode === 'play') { onPlayKey(e); return; }
   if (e.key === 'Shift') setGizmoSnap(true);
   if (e.key === '?') { showHelp(true); return; }
@@ -631,11 +632,11 @@ function duplicateSelected() {
 // WASD fly for the editor camera
 function flyCamera(dt) {
   if (ed.mode !== 'edit') return;
-  const sp = (keys.ShiftLeft ? 40 : 16) * dt;
+  const sp = (keys.ShiftLeft ? 40 : 16) * dt * prefs.flySpeed;
   const fwd = new THREE.Vector3(); editCam.getWorldDirection(fwd); fwd.y = 0; fwd.normalize();
   const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0));
   const mv = new THREE.Vector3();
-  if (keys.KeyW) mv.add(fwd); if (keys.KeyS) mv.sub(fwd); if (keys.KeyD) mv.add(right); if (keys.KeyA) mv.sub(right);
+  if (keys.KeyW || keys.ArrowUp) mv.add(fwd); if (keys.KeyS || keys.ArrowDown) mv.sub(fwd); if (keys.KeyD || keys.ArrowRight) mv.add(right); if (keys.KeyA || keys.ArrowLeft) mv.sub(right);
   if (keys.KeyE) mv.y += 1; if (keys.KeyQ) mv.y -= 1;
   if (mv.lengthSq() === 0) return;
   mv.normalize().multiplyScalar(sp);
@@ -833,6 +834,7 @@ function renderPanel() {
   const pref = el('details', { ...(ed.editorOpen ? { open: '' } : {}), ontoggle: (e) => { ed.editorOpen = e.target.open; } }, [el('summary', { text: 'EDITOR' })]);
   pref.appendChild(range('Orbit sensitivity', prefs.orbitSpeed, 0.2, 3, 0.1, (v) => { prefs.orbitSpeed = v; applyPrefs(); }, (v) => v.toFixed(1) + '×'));
   pref.appendChild(range('Look sensitivity (play)', prefs.lookSpeed, 0.2, 3, 0.1, (v) => { prefs.lookSpeed = v; applyPrefs(); }, (v) => v.toFixed(1) + '×'));
+  pref.appendChild(range('Fly speed (WASD / arrows)', prefs.flySpeed, 0.2, 3, 0.1, (v) => { prefs.flySpeed = v; applyPrefs(); }, (v) => v.toFixed(1) + '×'));
   pref.appendChild(el('div', { class: 'note', text: 'Right-drag orbit speed in the editor, and mouse-look speed in play mode. Saved in this browser.' }));
   root.appendChild(pref);
 }
