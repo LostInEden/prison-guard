@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, starterWorld, emptyWorld, uid } from './world.js?v=7';
-import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=7';
+import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, starterWorld, emptyWorld, uid } from './world.js?v=8';
+import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=8';
 
 const $ = (id) => document.getElementById(id);
 const clamp = THREE.MathUtils.clamp;
@@ -70,7 +70,7 @@ orbit.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.R
 orbit.maxPolarAngle = Math.PI * 0.495;
 orbit.target.set(0, 0, 0);
 // editor preferences (per browser, not part of the world file)
-const prefs = Object.assign({ orbitSpeed: 1, lookSpeed: 1, flySpeed: 1, author: '', room: '' }, JSON.parse(localStorage.getItem('ns-editor-prefs') || '{}'));
+const prefs = Object.assign({ orbitSpeed: 1, lookSpeed: 1, flySpeed: 1, labels: true, author: '', room: '' }, JSON.parse(localStorage.getItem('ns-editor-prefs') || '{}'));
 function applyPrefs() { orbit.rotateSpeed = prefs.orbitSpeed; orbit.panSpeed = Math.max(0.5, prefs.orbitSpeed); localStorage.setItem('ns-editor-prefs', JSON.stringify(prefs)); }
 applyPrefs();
 
@@ -555,6 +555,7 @@ window.addEventListener('keydown', (e) => {
     case 'KeyO': setTool('doorway'); break;
     case 'KeyB': setTool('box'); break;
     case 'KeyX': world.setHideRoofs(!world.hideRoofs); renderPanel(); toast(world.hideRoofs ? 'Roofs hidden' : 'Roofs shown'); break;
+    case 'KeyL': prefs.labels = !prefs.labels; applyPrefs(); renderPanel(); toast(prefs.labels ? 'Name tags on' : 'Name tags off'); break;
     case 'BracketLeft': adjustBrush(-1); break;
     case 'BracketRight': adjustBrush(1); break;
   }
@@ -835,6 +836,8 @@ function renderPanel() {
   pref.appendChild(range('Orbit sensitivity', prefs.orbitSpeed, 0.2, 3, 0.1, (v) => { prefs.orbitSpeed = v; applyPrefs(); }, (v) => v.toFixed(1) + '×'));
   pref.appendChild(range('Look sensitivity (play)', prefs.lookSpeed, 0.2, 3, 0.1, (v) => { prefs.lookSpeed = v; applyPrefs(); }, (v) => v.toFixed(1) + '×'));
   pref.appendChild(range('Fly speed (WASD / arrows)', prefs.flySpeed, 0.2, 3, 0.1, (v) => { prefs.flySpeed = v; applyPrefs(); }, (v) => v.toFixed(1) + '×'));
+  pref.appendChild(field('Name tags (L)', el('input', { type: 'checkbox', ...(prefs.labels ? { checked: '' } : {}), onchange: (e) => { prefs.labels = e.target.checked; applyPrefs(); } })));
+  pref.appendChild(el('div', { class: 'note', text: 'Anything with a Name (top of the object panel) shows a floating tag, so you can see what a shape is meant to be.' }));
   pref.appendChild(el('div', { class: 'note', text: 'Right-drag orbit speed in the editor, and mouse-look speed in play mode. Saved in this browser.' }));
   root.appendChild(pref);
 }
@@ -964,6 +967,31 @@ function updateHint() {
   }[ed.tool] || '<b>Click</b> the ground or any surface to drop it there · <b>R</b> turns it 15°, <b>, .</b> 90° · <b>Shift</b> snaps to a grid · <b>Esc</b> back to Select';
   $('hint').innerHTML = h + ' &nbsp;·&nbsp; <b>?</b> help &nbsp;·&nbsp; right-drag or <b>Tab</b> look · middle-drag pan · wheel zoom · WASD fly, E up, Q down';
 }
+// ---- name tags: named objects show a floating label in the editor (L toggles)
+const labelPool = new Map();   // id -> div
+function updateLabels() {
+  const box = $('labels');
+  const on = ed.mode === 'edit' && prefs.labels;
+  box.style.display = on ? 'block' : 'none';
+  if (!on) return;
+  const seen = new Set(), v = new THREE.Vector3();
+  for (const o of world.data.objects) {
+    if (!o.name) continue;
+    const g = world.meshes.get(o.id); if (!g) continue;
+    const top = o.type === 'hollow' ? Math.max(...o.parts.map(p => p.pos[1] + p.scale[1])) : (o.scale ? o.scale[1] : 2);
+    v.set(o.pos[0], o.pos[1] + top + 0.6, o.pos[2]);
+    if (v.distanceTo(editCam.position) > 150) continue;
+    v.project(editCam);
+    if (v.z > 1 || v.x < -1.05 || v.x > 1.05 || v.y < -1.05 || v.y > 1.05) continue;
+    seen.add(o.id);
+    let d = labelPool.get(o.id);
+    if (!d) { d = document.createElement('div'); d.className = 'tag'; box.appendChild(d); labelPool.set(o.id, d); }
+    if (d.textContent !== o.name) d.textContent = o.name;
+    d.style.transform = `translate(-50%, -100%) translate(${((v.x + 1) / 2 * innerWidth).toFixed(0)}px, ${((1 - v.y) / 2 * innerHeight).toFixed(0)}px)`;
+  }
+  for (const [id, d] of labelPool) if (!seen.has(id)) { d.remove(); labelPool.delete(id); }
+}
+
 function showHelp(on) { $('help').classList.toggle('show', on); }
 $('btnHelp').addEventListener('click', () => showHelp(true));
 $('helpClose').addEventListener('click', () => showHelp(false));
@@ -1146,6 +1174,7 @@ function frame() {
     sky.position.set(editCam.position.x, 0, editCam.position.z);
     if (selected) refreshSelectionBox();
   }
+  updateLabels();
   renderer.render(scene, camera);
 }
 animate();

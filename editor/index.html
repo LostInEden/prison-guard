@@ -65,6 +65,8 @@
   #live { position: fixed; left: 50%; top: 54px; transform: translateX(-50%); display: none; align-items: center; gap: 10px; background: rgba(20,16,4,.96); border: 1px solid var(--acc); padding: 8px 14px; z-index: 8; font-size: 13px; max-width: 70vw; }
   #live.show { display: flex; }
   #live b { color: var(--acc); }
+  #labels { position: fixed; inset: 0; pointer-events: none; z-index: 3; overflow: hidden; }
+  #labels .tag { position: absolute; left: 0; top: 0; white-space: nowrap; font-size: 11px; letter-spacing: 1px; color: #ffe9ad; background: rgba(10,10,6,.72); border: 1px solid rgba(255,210,90,.45); padding: 1px 7px; border-radius: 3px; }
   #toast { position: fixed; left: 50%; top: 54px; transform: translateX(-50%); background: rgba(0,0,0,.7); border: 1px solid var(--line); padding: 6px 14px; opacity: 0; transition: opacity .2s; z-index: 6; pointer-events: none; }
 
   body.playing #topbar, body.playing #tools, body.playing #panel, body.playing #hint { display: none; }
@@ -146,7 +148,7 @@
           <h3>Editing a shape</h3>
           <p>Click it. <b>1</b> move · <b>2</b> rotate · <b>3</b> resize, then drag the coloured handles (hold <b>Shift</b> to snap). The panel on the right has exact numbers: size, corner radius, colour. <b>PgUp / PgDn</b> lift or lower it, <b>End</b> sits it on the ground. <b>Ctrl+D</b> copies it, <b>Delete</b> removes it, <b>Ctrl+Z</b> undoes.</p>
           <h3>Rooms (hollow)</h3>
-          <p>Select a shape and tick <b>Hollow</b> — it becomes a room with walls, floor and roof. To make one building out of several shapes, <b>Shift+click</b> them all and press <b>G</b>. Push shapes into each other so their insides join. <b>X</b> hides all roofs so you can build inside. <b>Wall</b> tool inside a room: press, drag along the floor, release — a floor-to-ceiling wall from A to B (<b>Shift</b> snaps it straight). <b>Double-click</b> anywhere to orbit around that point.</p>
+          <p>Select a shape and tick <b>Hollow</b> — it becomes a room with walls, floor and roof. To make one building out of several shapes, <b>Shift+click</b> them all and press <b>G</b>. Push shapes into each other so their insides join. <b>X</b> hides all roofs so you can build inside. <b>L</b> shows name tags — give shapes a <b>Name</b> in the panel so your teammate can see what they're meant to be. <b>Wall</b> tool inside a room: press, drag along the floor, release — a floor-to-ceiling wall from A to B (<b>Shift</b> snaps it straight). <b>Double-click</b> anywhere to orbit around that point.</p>
         </div>
         <div>
           <h3>Doors and windows</h3>
@@ -163,6 +165,7 @@
   </div>
 
   <div id="panel"><div id="panelContent"></div></div>
+  <div id="labels"></div>
   <div id="hint"></div>
   <div id="toast"></div>
   <div id="live"><span id="liveText"></span><button id="liveLoad" class="primary">LOAD THEIRS</button><button id="liveLater">LATER</button></div>
@@ -186,6 +189,6 @@
     }
   }
   </script>
-  <script type="module" src="./app.js?v=7"></script>
+  <script type="module" src="./app.js?v=8"></script>
 </body>
 </html>
