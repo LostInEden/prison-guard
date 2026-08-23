@@ -45,11 +45,18 @@
   #panel summary { cursor: pointer; font-size: 11px; letter-spacing: 3px; color: var(--acc); padding: 6px 0; list-style: none; }
   #panel summary::before { content: '▸ '; color: var(--dim); }
   #panel details[open] summary::before { content: '▾ '; }
-  #help { position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 20; display: none; align-items: center; justify-content: center; }
-  #help.show { display: flex; }
-  #helpBox { width: min(960px, 92vw); max-height: 90vh; overflow-y: auto; background: #0e1116; border: 1px solid var(--acc); padding: 18px 26px 26px; font-size: 13px; line-height: 1.6; }
-  #helpBox h2 { font-size: 14px; letter-spacing: 4px; color: var(--acc); margin: 0 0 10px; display: flex; justify-content: space-between; }
-  #helpBox h2 span { cursor: pointer; color: var(--dim); letter-spacing: 1px; font-size: 12px; }
+  #help, .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 20; display: none; align-items: center; justify-content: center; }
+  #help.show, .overlay.show { display: flex; }
+  #helpBox, .modalBox { width: min(960px, 92vw); max-height: 90vh; overflow-y: auto; background: #0e1116; border: 1px solid var(--acc); padding: 18px 26px 26px; font-size: 13px; line-height: 1.6; }
+  #helpBox h2, .modalBox h2 { font-size: 14px; letter-spacing: 4px; color: var(--acc); margin: 0 0 10px; display: flex; justify-content: space-between; }
+  #helpBox h2 span, .modalBox h2 span { cursor: pointer; color: var(--dim); letter-spacing: 1px; font-size: 12px; }
+  #worldsBox { width: min(720px, 92vw); }
+  .wrow { display: grid; grid-template-columns: 1fr auto auto auto; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+  .wrow .wname { color: #fff; font-size: 14px; }
+  .wrow .wmeta { color: var(--dim); font-size: 12px; }
+  .wrow.mine .wname::after { content: ' · you'; color: var(--acc); font-size: 11px; }
+  .wver { padding: 4px 0 4px 18px; display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; color: var(--dim); font-size: 12px; }
+  .wver button { padding: 3px 8px; font-size: 11px; }
   #helpBox h3 { font-size: 11px; letter-spacing: 3px; color: var(--acc); margin: 14px 0 4px; }
   #helpBox p { margin: 0; color: #d6d6d6; }
   #helpBox b { color: #fff; background: rgba(255,255,255,.08); padding: 0 5px; border-radius: 3px; }
@@ -81,7 +88,8 @@
     <button id="btnStarter" title="Load the small sample world">SAMPLE</button>
     <button id="btnPrison" title="Load worlds/prison.json (the compound built from the aerial reference)">PRISON</button>
     <div class="sep"></div>
-    <button id="btnSave" title="Save to this browser (Ctrl+S)">SAVE</button>
+    <button id="btnWorlds" title="Browse the worlds you and your team have saved online">WORLDS</button>
+    <button id="btnSave" title="Save online for the team and to this browser (Ctrl+S)">SAVE</button>
     <button id="btnExport" title="Download as .json">EXPORT</button>
     <button id="btnImport" title="Load a .json file">IMPORT</button>
     <input id="fileImport" type="file" accept="application/json" style="display:none" />
@@ -115,6 +123,13 @@
     <button id="btnHelp" title="Controls cheat sheet (?)"><b>?</b>Help</button>
   </div>
 
+  <div id="worlds" class="overlay">
+    <div id="worldsBox" class="modalBox">
+      <h2>SHARED WORLDS <span id="worldsClose">✕ close (Esc)</span></h2>
+      <div id="worldsWho" class="note"></div>
+      <div id="worldsList"></div>
+    </div>
+  </div>
   <div id="help">
     <div id="helpBox">
       <h2>WORLD EDITOR — HOW IT WORKS <span id="helpClose">✕ close (Esc)</span></h2>
@@ -137,7 +152,7 @@
           <h3>Play</h3>
           <p><b>P</b> or ▶ PLAY starts at the spawn marker. <b>W A S D</b> walk, <b>Shift</b> run, <b>F</b> interact, <b>L</b> torch, hold <b>right mouse</b> to aim the torch, <b>Esc</b> back to the editor.</p>
           <h3>Saving</h3>
-          <p>Autosaves to this browser every 30 s. <b>SAVE</b> (Ctrl+S) saves now. <b>EXPORT</b> downloads a .json you can send to someone; <b>IMPORT</b> loads one. Your work is only on this computer until you EXPORT it.</p>
+          <p><b>SAVE</b> (Ctrl+S) saves the world online for the team under the name in the top bar — the first time it asks for your name and the room code. <b>WORLDS</b> lists everyone's worlds: LOAD one, or open its HISTORY to go back to an earlier version (every save keeps the old ones). The editor also autosaves to this browser every 30 s. <b>EXPORT</b> downloads a .json file; <b>IMPORT</b> loads one.</p>
         </div>
       </div>
     </div>

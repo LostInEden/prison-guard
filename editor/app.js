@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, starterWorld, emptyWorld, uid } from './world.js';
+import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js';
 
 const $ = (id) => document.getElementById(id);
 const clamp = THREE.MathUtils.clamp;
@@ -69,7 +70,7 @@ orbit.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.R
 orbit.maxPolarAngle = Math.PI * 0.495;
 orbit.target.set(0, 0, 0);
 // editor preferences (per browser, not part of the world file)
-const prefs = Object.assign({ orbitSpeed: 1, lookSpeed: 1 }, JSON.parse(localStorage.getItem('ns-editor-prefs') || '{}'));
+const prefs = Object.assign({ orbitSpeed: 1, lookSpeed: 1, author: '', room: '' }, JSON.parse(localStorage.getItem('ns-editor-prefs') || '{}'));
 function applyPrefs() { orbit.rotateSpeed = prefs.orbitSpeed; orbit.panSpeed = Math.max(0.5, prefs.orbitSpeed); localStorage.setItem('ns-editor-prefs', JSON.stringify(prefs)); }
 applyPrefs();
 
@@ -443,9 +444,10 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Shift') setGizmoSnap(true);
   if (e.key === '?') { showHelp(true); return; }
   if (e.code === 'Escape' && $('help').classList.contains('show')) { showHelp(false); return; }
+  if (e.code === 'Escape' && $('worlds').classList.contains('show')) { $('worlds').classList.remove('show'); return; }
   if (e.ctrlKey || e.metaKey) {
     if (e.code === 'KeyZ') { e.preventDefault(); undo(); }
-    if (e.code === 'KeyS') { e.preventDefault(); saveLocal(); }
+    if (e.code === 'KeyS') { e.preventDefault(); saveAll(); }
     if (e.code === 'KeyD' && selected) { e.preventDefault(); duplicateSelected(); }
     return;
   }
@@ -571,7 +573,69 @@ function undo() {
   const o = world.getObject(id); if (o) select(o);
   toast('Undo');
 }
-function saveLocal() { world.data.name = $('worldName').value || 'Untitled'; localStorage.setItem('ns-world', JSON.stringify(world.serialize())); toast('Saved to browser'); }
+function saveLocal() { world.data.name = $('worldName').value || 'Untitled'; localStorage.setItem('ns-world', JSON.stringify(world.serialize())); }
+// ---- shared (cloud) worlds
+const cloudState = { loaded: null };   // { name, id, created_at } of the cloud version currently open, for "someone saved a newer one" warnings
+async function ensureIdentity() {
+  if (!prefs.author) { const n = prompt('Your name (shown on worlds you save):'); if (!n) return false; prefs.author = n.trim(); }
+  while (!prefs.room) {
+    const c = prompt('Room code (ask whoever set up the shared worlds):'); if (c === null) return false;
+    try { if (await checkRoom(c.trim())) prefs.room = c.trim(); else alert('That room code was not accepted.'); } catch (err) { alert('Could not reach the server: ' + err.message); return false; }
+  }
+  applyPrefs();
+  return true;
+}
+async function saveAll() {
+  saveLocal();
+  if (!(await ensureIdentity())) { toast('Saved to this browser only'); return; }
+  let name = ($('worldName').value || '').trim();
+  if (!name || name === 'Untitled') { name = prompt('Name this world:', name || ''); if (!name) { toast('Saved to this browser only'); return; } $('worldName').value = name; world.data.name = name; }
+  try {
+    // warn if someone else saved this world since we opened it
+    const latest = (await listWorlds(prefs.room)).find(w => w.name === name);
+    if (latest && (!cloudState.loaded || cloudState.loaded.name !== name || new Date(latest.created_at) > new Date(cloudState.loaded.created_at)) && latest.author !== prefs.author) {
+      if (!confirm(`${latest.author} saved "${name}" ${timeAgo(latest.created_at)}. Save yours as a newer version anyway? (Their version stays in the history.)`)) { toast('Saved to this browser only'); return; }
+    }
+    const id = await cloudSave(prefs.room, name, prefs.author, world.serialize());
+    cloudState.loaded = { name, id, created_at: new Date().toISOString() };
+    toast(`Saved "${name}" for the team`);
+  } catch (err) {
+    if (/bad room code/i.test(err.message)) { prefs.room = ''; applyPrefs(); alert('The room code is no longer accepted — enter it again on the next save.'); }
+    else alert('Online save failed (saved to this browser only): ' + err.message);
+  }
+}
+async function openWorlds() {
+  if (!(await ensureIdentity())) return;
+  const box = $('worldsList'); box.innerHTML = '<div class="note">Loading…</div>'; $('worlds').classList.add('show');
+  $('worldsWho').innerHTML = `You are <b>${prefs.author}</b> · room <b>${prefs.room}</b> — <span style="cursor:pointer;color:#ffd25a" id="worldsIdent">change</span>. SAVE (Ctrl+S) puts the open world here under its name; every save keeps the previous versions.`;
+  $('worldsIdent').onclick = () => { prefs.author = ''; prefs.room = ''; applyPrefs(); $('worlds').classList.remove('show'); openWorlds(); };
+  let rows;
+  try { rows = await listWorlds(prefs.room); } catch (err) { box.innerHTML = `<div class="note">Could not load: ${err.message}</div>`; return; }
+  box.innerHTML = '';
+  if (!rows.length) { box.appendChild(el('div', { class: 'note', text: 'No shared worlds yet. Name your world in the top bar and press SAVE to put it here.' })); return; }
+  for (const w of rows) {
+    const row = el('div', { class: 'wrow' + (w.author === prefs.author ? ' mine' : '') }, [
+      el('div', {}, [el('div', { class: 'wname', text: w.name }), el('div', { class: 'wmeta', text: `${w.author} · ${timeAgo(w.created_at)} · ${w.versions} version${w.versions == 1 ? '' : 's'}` })]),
+      el('button', { text: 'LOAD', onclick: () => loadCloudVersion(w.id, w.name, w.created_at) }),
+      el('button', { text: 'HISTORY', onclick: async () => {
+        if (row.nextSibling?.classList?.contains('wvers')) { row.nextSibling.remove(); return; }
+        const vers = el('div', { class: 'wvers' });
+        for (const v of await worldVersions(prefs.room, w.name)) vers.appendChild(el('div', { class: 'wver' }, [el('span', { text: `${v.author} · ${new Date(v.created_at).toLocaleString()}` }), el('button', { text: 'LOAD', onclick: () => loadCloudVersion(v.id, w.name, v.created_at) })]));
+        row.after(vers);
+      } }),
+      el('button', { text: 'EXPORT', title: 'Download this version as a .json file', onclick: async () => { const data = await cloudLoad(prefs.room, w.id); const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' })); a.download = `${w.name.replace(/[^a-z0-9_-]+/gi, '_')}.json`; a.click(); } }),
+    ]);
+    box.appendChild(row);
+  }
+}
+async function loadCloudVersion(id, name, created_at) {
+  if (!confirm(`Load "${name}"? Unsaved changes to the current world are lost (it stays in this browser's last save).`)) return;
+  try { const data = await cloudLoad(prefs.room, id); if (!data) throw new Error('empty'); loadWorld(data); $('worldName').value = name; world.data.name = name; cloudState.loaded = { name, id, created_at }; $('worlds').classList.remove('show'); toast(`Loaded "${name}"`); }
+  catch (err) { alert('Could not load: ' + err.message); }
+}
+$('btnWorlds').addEventListener('click', openWorlds);
+$('worldsClose').addEventListener('click', () => $('worlds').classList.remove('show'));
+$('worlds').addEventListener('click', (e) => { if (e.target === $('worlds')) $('worlds').classList.remove('show'); });
 function exportWorld() {
   world.data.name = $('worldName').value || 'Untitled';
   const blob = new Blob([JSON.stringify(world.serialize(), null, 1)], { type: 'application/json' });
@@ -588,7 +652,7 @@ async function loadWorldUrl(url) {
   catch (err) { alert(`Could not load ${url}: ${err.message}`); }
 }
 $('btnPrison').addEventListener('click', () => { if (confirm('Load the prison compound? (unsaved changes are lost)')) loadWorldUrl('../worlds/prison.json'); });
-$('btnSave').addEventListener('click', saveLocal);
+$('btnSave').addEventListener('click', saveAll);
 $('btnExport').addEventListener('click', exportWorld);
 $('btnImport').addEventListener('click', () => $('fileImport').click());
 $('fileImport').addEventListener('change', async (e) => {
