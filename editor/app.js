@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, starterWorld, emptyWorld, uid } from './world.js?v=3';
-import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=3';
+import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, starterWorld, emptyWorld, uid } from './world.js?v=4';
+import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=4';
 
 const $ = (id) => document.getElementById(id);
 const clamp = THREE.MathUtils.clamp;
@@ -565,7 +565,7 @@ function flyCamera(dt) {
 // =====================================================================
 //  UNDO / SAVE / LOAD
 // =====================================================================
-function pushUndo() { ed.undo.push(JSON.stringify(world.serialize())); if (ed.undo.length > 40) ed.undo.shift(); }
+function pushUndo() { ed.undo.push(JSON.stringify(world.serialize())); if (ed.undo.length > 40) ed.undo.shift(); ed.unsaved = true; }
 function undo() {
   const s = ed.undo.pop(); if (!s) { toast('Nothing to undo'); return; }
   const id = ed.selectedId; select(null);
@@ -575,7 +575,20 @@ function undo() {
 }
 function saveLocal() { world.data.name = $('worldName').value || 'Untitled'; localStorage.setItem('ns-world', JSON.stringify(world.serialize())); }
 // ---- shared (cloud) worlds
-const cloudState = { loaded: null };   // { name, id, created_at } of the cloud version currently open, for "someone saved a newer one" warnings
+const cloudState = { loaded: null, seen: null };   // loaded: { name, id, created_at } of the cloud version currently open; seen: newest version id we've told the user about
+// ---- live reload: every 15 s ask whether someone else saved a newer version of the open world, and offer to load it
+async function pollForNewerVersion() {
+  const cur = cloudState.loaded; if (!cur || !prefs.room || ed.mode === 'play') return;
+  let vers; try { vers = await worldVersions(prefs.room, cur.name); } catch { return; }
+  const latest = vers[0]; if (!latest || latest.id === cur.id || new Date(latest.created_at) <= new Date(cur.created_at)) { $('live').classList.remove('show'); return; }
+  if (cloudState.seen === latest.id && $('live').dataset.dismissed === latest.id) return;
+  cloudState.seen = latest.id;
+  $('liveText').innerHTML = `<b>${latest.author}</b> saved "${cur.name}" ${timeAgo(latest.created_at)}.` + (ed.unsaved ? ' You have unsaved changes — SAVE yours first (it becomes a newer version), then load theirs.' : '');
+  $('liveLoad').onclick = () => { $('live').classList.remove('show'); loadCloudVersion(latest.id, cur.name, latest.created_at, true); };
+  $('liveLater').onclick = () => { $('live').dataset.dismissed = latest.id; $('live').classList.remove('show'); };
+  $('live').classList.add('show');
+}
+setInterval(pollForNewerVersion, 15000);
 async function ensureIdentity() {
   if (!prefs.author) { const n = prompt('Your name (shown on worlds you save):'); if (!n) return false; prefs.author = n.trim(); }
   while (!prefs.room) {
@@ -597,7 +610,7 @@ async function saveAll() {
       if (!confirm(`${latest.author} saved "${name}" ${timeAgo(latest.created_at)}. Save yours as a newer version anyway? (Their version stays in the history.)`)) { toast('Saved to this browser only'); return; }
     }
     const id = await cloudSave(prefs.room, name, prefs.author, world.serialize());
-    cloudState.loaded = { name, id, created_at: new Date().toISOString() };
+    cloudState.loaded = { name, id, created_at: new Date().toISOString() }; ed.unsaved = false;
     toast(`Saved "${name}" for the team`);
   } catch (err) {
     if (/bad room code/i.test(err.message)) { prefs.room = ''; applyPrefs(); alert('The room code is no longer accepted — enter it again on the next save.'); }
@@ -628,9 +641,9 @@ async function openWorlds() {
     box.appendChild(row);
   }
 }
-async function loadCloudVersion(id, name, created_at) {
-  if (!confirm(`Load "${name}"? Unsaved changes to the current world are lost (it stays in this browser's last save).`)) return;
-  try { const data = await cloudLoad(prefs.room, id); if (!data) throw new Error('empty'); loadWorld(data); $('worldName').value = name; world.data.name = name; cloudState.loaded = { name, id, created_at }; $('worlds').classList.remove('show'); toast(`Loaded "${name}"`); }
+async function loadCloudVersion(id, name, created_at, fromBanner = false) {
+  if (ed.unsaved && !confirm(fromBanner ? `Load ${name} from the team? Your unsaved changes are lost (they stay in this browser's last autosave).` : `Load "${name}"? Unsaved changes to the current world are lost (it stays in this browser's last save).`)) return;
+  try { const data = await cloudLoad(prefs.room, id); if (!data) throw new Error('empty'); loadWorld(data); $('worldName').value = name; world.data.name = name; cloudState.loaded = { name, id, created_at }; ed.unsaved = false; $('worlds').classList.remove('show'); toast(`Loaded "${name}"`); }
   catch (err) { alert('Could not load: ' + err.message); }
 }
 $('btnWorlds').addEventListener('click', openWorlds);

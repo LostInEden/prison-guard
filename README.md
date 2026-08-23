@@ -74,7 +74,8 @@ The editor saves to a shared online store as well as to your browser, so everyon
 
 - **SAVE** (Ctrl+S) saves the open world online under the name in the top bar. The first time it asks for your name and the **room code** (the shared password for the team's worlds — ask whoever set it up). Both are remembered in your browser.
 - **WORLDS** lists every world with who saved it last and when. **LOAD** opens one; **HISTORY** shows every saved version of it (nothing is ever overwritten — each save is a new version) and lets you load an older one; **EXPORT** downloads a version as a `.json`.
-- If someone else saved the same world since you opened it, SAVE warns you before adding your version on top.
+- **Live reload**: while you have a shared world open, the editor checks every 15 s; when the other person saves a newer version, a banner appears with **LOAD THEIRS** (or LATER). If you have unsaved changes it tells you to SAVE first — your save becomes a newer version, nothing is lost.
+- If someone else saved the same world since you opened it, SAVE also warns you before adding your version on top.
 - Hosted editor: once GitHub Pages is enabled on this repo, the editor is at `https://lostineden.github.io/prison-guard/editor/` — nothing to install.
 
 How it works: a Supabase project (`editor/cloud.js` has the URL and the public anon key) with a `worlds` table that is only reachable through SQL functions (`list_worlds`, `world_versions`, `load_world`, `save_world`) that check the room code against a private table. The SQL that sets this up is in `worlds/SHARING.sql`. To change the room code, run `update private_config set value = 'new-code' where key = 'room_code';` in the Supabase SQL editor.

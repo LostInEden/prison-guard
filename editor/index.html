@@ -62,6 +62,9 @@
   #helpBox b { color: #fff; background: rgba(255,255,255,.08); padding: 0 5px; border-radius: 3px; }
   #helpBox .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 30px; }
   @media (max-width: 760px) { #helpBox .cols { grid-template-columns: 1fr; } }
+  #live { position: fixed; left: 50%; top: 54px; transform: translateX(-50%); display: none; align-items: center; gap: 10px; background: rgba(20,16,4,.96); border: 1px solid var(--acc); padding: 8px 14px; z-index: 8; font-size: 13px; max-width: 70vw; }
+  #live.show { display: flex; }
+  #live b { color: var(--acc); }
   #toast { position: fixed; left: 50%; top: 54px; transform: translateX(-50%); background: rgba(0,0,0,.7); border: 1px solid var(--line); padding: 6px 14px; opacity: 0; transition: opacity .2s; z-index: 6; pointer-events: none; }
 
   body.playing #topbar, body.playing #tools, body.playing #panel, body.playing #hint { display: none; }
@@ -161,6 +164,7 @@
   <div id="panel"><div id="panelContent"></div></div>
   <div id="hint"></div>
   <div id="toast"></div>
+  <div id="live"><span id="liveText"></span><button id="liveLoad" class="primary">LOAD THEIRS</button><button id="liveLater">LATER</button></div>
 
   <div id="hud">
     <div id="crosshair"></div>
@@ -181,6 +185,6 @@
     }
   }
   </script>
-  <script type="module" src="./app.js?v=3"></script>
+  <script type="module" src="./app.js?v=4"></script>
 </body>
 </html>
