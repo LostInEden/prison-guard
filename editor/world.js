@@ -1,17 +1,20 @@
 // World data model + scene builder. The editor and the play mode both drive this.
 import * as THREE from 'three';
 import { Brush, Evaluator, ADDITION, SUBTRACTION } from 'three-bvh-csg';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
 export const DEFAULTS = {
-  box:      { scale: [2, 1, 2],     color: '#8d918c', solid: true,  grounded: true, interact: 'none', group: '', text: '' },
+  // radius: rounds the box's edges (metres). 0 = sharp.
+  box:      { scale: [2, 1, 2],     color: '#8d918c', solid: true,  grounded: true, interact: 'none', group: '', text: '', radius: 0 },
   cylinder: { scale: [1, 2, 1],     color: '#6e7480', solid: true,  grounded: true, interact: 'none', group: '', text: '', half: false },
   // a shell built from several shapes: union(parts) minus the same parts shrunk by `thickness`, minus any `cuts`
   hollow:   { color: '#8d918c', thickness: 0.3, parts: [], cuts: [], solid: true, grounded: false },
   // an opening through a hollow's wall, linked to it by `target`; origin = centre of the opening at floor level,
   // local x along the wall, local +z facing out. scale = [width, height, depth through the wall]
-  doorway:  { scale: [1.2, 2.2, 0.7], color: '#5b6068', target: null, grounded: false },
+  // frame: draw the posts + lintel (a door); false = a bare hole (a window)
+  doorway:  { scale: [1.2, 2.2, 0.7], color: '#5b6068', target: null, grounded: false, frame: true },
   sphere:   { scale: [1, 1, 1],     color: '#c0a060', solid: true,  grounded: true, interact: 'none', group: '', text: '' },
-  wall:     { scale: [4, 3, 0.3],   color: '#9a9d97', solid: true,  grounded: true, interact: 'none', group: '', text: '' },
+  wall:     { scale: [4, 3, 0.3],   color: '#9a9d97', solid: true,  grounded: true, interact: 'none', group: '', text: '', radius: 0 },
   ramp:     { scale: [3, 1, 4],     color: '#7a7d78', solid: false, grounded: true },
   // swing: 'auto' opens away from whoever opens it; 'in' / 'out' always swing towards local -z / +z
   door:     { scale: [1.2, 2.4, 0.1], color: '#4a5560', locked: false, keyName: 'Key', grounded: true, bars: false, swing: 'auto' },
@@ -20,7 +23,9 @@ export const DEFAULTS = {
   path:     { width: 3, color: '#2b2d30', points: [], smooth: true },
   fence:    { points: [], height: 2.2, spacing: 3, style: 'chainlink', color: '#9aa1a8', solid: true },
 };
-export const TYPE_LABELS = { box: 'Box', cylinder: 'Cylinder', sphere: 'Sphere', wall: 'Wall', ramp: 'Ramp', door: 'Door', tree: 'Tree', light: 'Light', path: 'Path', hollow: 'Hollow', fence: 'Fence', doorway: 'Doorway' };
+export const TYPE_LABELS = { box: 'Box', cylinder: 'Cylinder', sphere: 'Sphere', wall: 'Wall', ramp: 'Ramp', door: 'Door', tree: 'Tree', light: 'Light', path: 'Path', hollow: 'Hollow', fence: 'Fence', doorway: 'Opening' };
+// objects whose mesh is built at its real size (group scale stays 1), so a gizmo scale is applied to the data and rebuilt
+export const builtAtSize = (o) => o.type === 'hollow' || ((o.type === 'box' || o.type === 'wall') && o.radius > 0);
 export const LINE_TYPES = ['path', 'fence'];   // drawn as a chain of points, not placed
 export const HOLLOW_TYPES = ['box', 'wall', 'cylinder', 'sphere'];   // shapes that can be hollowed together
 
@@ -102,16 +107,32 @@ function insideUnit(kind, lx, ly, lz) {
   if (kind === 'halfcyl') return lz <= 0 && lx * lx + lz * lz <= 0.25;
   return lx * lx + lz * lz <= 0.25;   // cylinder; a sphere is treated as a cylinder for walking purposes
 }
+// a box at its real size, base on y = 0, optionally with rounded edges
+export function boxGeometryAt(w, h, d, radius = 0) {
+  const r = Math.min(radius, w / 2 - 0.01, h / 2 - 0.01, d / 2 - 0.01);
+  const geo = r > 0.005 ? new RoundedBoxGeometry(w, h, d, 3, r) : new THREE.BoxGeometry(w, h, d);
+  geo.translate(0, h / 2, 0);
+  return geo;
+}
 // geometry of a hollow, in the hollow's own frame
 function buildHollowGeometry(o) {
   const ev = new Evaluator(); ev.useGroups = false; ev.attributes = ['position', 'normal'];
-  const mk = (kind, m) => { const b = new Brush(primitiveGeometry(kind)); b.matrixAutoUpdate = false; b.matrix.copy(m); b.updateMatrixWorld(true); return b; };
+  const mk = (geo, m) => { const b = new Brush(geo); b.matrixAutoUpdate = false; b.matrix.copy(m); b.updateMatrixWorld(true); return b; };
+  // rounded boxes are built at size (so the rounding is true in every axis); everything else is a unit shape + matrix
+  const brush = (p, inset) => {
+    if (partKind(p) === 'box' && p.radius > 0) {
+      const [w, h, d] = p.scale;
+      const m = new THREE.Matrix4().compose(new THREE.Vector3(p.pos[0], p.pos[1], p.pos[2]), _q.setFromEuler(_e.set(0, p.rot || 0, 0)), new THREE.Vector3(1, 1, 1));
+      return mk(boxGeometryAt(Math.max(0.02, w - 2 * inset), Math.max(0.02, h - 2 * inset), Math.max(0.02, d - 2 * inset), Math.max(0, p.radius - inset)), m);
+    }
+    return mk(primitiveGeometry(partKind(p)), inset ? insetMatrix(p, inset) : partMatrix(p));
+  };
   const unionAll = (brushes) => brushes.reduce((acc, b) => acc ? ev.evaluate(acc, b, ADDITION) : b, null);
-  const outer = unionAll(o.parts.map(p => mk(partKind(p), partMatrix(p))));
-  const inner = unionAll(o.parts.map(p => mk(partKind(p), insetMatrix(p, o.thickness))));
+  const outer = unionAll(o.parts.map(p => brush(p, 0)));
+  const inner = unionAll(o.parts.map(p => brush(p, o.thickness)));
   if (!outer || !inner) return null;
   let res = ev.evaluate(outer, inner, SUBTRACTION);
-  for (const c of o.cuts || []) res = ev.evaluate(res, mk('box', partMatrix(c)), SUBTRACTION);
+  for (const c of o.cuts || []) res = ev.evaluate(res, mk(primitiveGeometry('box'), partMatrix(c)), SUBTRACTION);
   res.geometry.computeBoundingSphere();
   return res.geometry;
 }
@@ -225,6 +246,7 @@ export class World {
     const h00 = heights[iz * n + ix], h10 = heights[iz * n + ix + 1], h01 = heights[(iz + 1) * n + ix], h11 = heights[(iz + 1) * n + ix + 1];
     return (h00 * (1 - tx) + h10 * tx) * (1 - tz) + (h01 * (1 - tx) + h11 * tx) * tz;
   }
+  resetTerrain() { this.data.terrain.heights.fill(0); this.refreshTerrain(); this.groundAll(); }
   // change the map's edge length (metres). Existing heights are resampled into the new grid,
   // so growing keeps what you sculpted and shrinking just clips the outside.
   resizeTerrain(size) {
@@ -251,6 +273,7 @@ export class World {
       if (mode === 'raise') h += strength * f;
       else if (mode === 'lower') h -= strength * f;
       else if (mode === 'flatten') h += (target - h) * Math.min(1, f * strength * 0.6);
+      else if (mode === 'reset') h += (0 - h) * Math.min(1, f * strength * 0.8);   // back to flat ground
       else if (mode === 'smooth') {
         let sum = 0, c = 0;
         for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const ii = i + di, jj = j + dj; if (ii >= 0 && ii <= seg && jj >= 0 && jj <= seg) { sum += src[jj * n + ii]; c++; } }
@@ -358,9 +381,17 @@ export class World {
   syncTransform(o) {
     const g = this.meshes.get(o.id); if (!g) return;
     g.position.set(o.pos[0], o.pos[1], o.pos[2]); g.rotation.set(0, o.rot || 0, 0);
-    if (o.scale && o.type !== 'path' && o.type !== 'light') g.scale.set(o.scale[0], o.scale[1], o.scale[2]); else g.scale.set(1, 1, 1);
+    if (o.scale && o.type !== 'path' && o.type !== 'light' && !builtAtSize(o)) g.scale.set(o.scale[0], o.scale[1], o.scale[2]); else g.scale.set(1, 1, 1);
     if (o.type === 'doorway' && o.target) this.dirty.add(o.target);
     if (o.type === 'hollow') this.updateRoofClip(o);
+  }
+  // a gizmo scale on an object built at real size: bake the factor into the data and rebuild
+  applyScaleFactor(o, f) {
+    if (o.type === 'hollow') {
+      for (const p of o.parts) { p.pos = [p.pos[0] * f[0], p.pos[1] * f[1], p.pos[2] * f[2]]; p.scale = [p.scale[0] * f[0], p.scale[1] * f[1], p.scale[2] * f[2]]; }
+      for (const c of o.cuts || []) { c.pos = [c.pos[0] * f[0], c.pos[1] * f[1], c.pos[2] * f[2]]; c.scale = [c.scale[0] * f[0], c.scale[1] * f[1], c.scale[2] * f[2]]; }
+    } else if (o.scale) o.scale = [Math.max(0.05, o.scale[0] * f[0]), Math.max(0.05, o.scale[1] * f[1]), Math.max(0.05, o.scale[2] * f[2])];
+    this.rebuildObject(o.id);
   }
   // read transform back from a gizmo-manipulated group.
   //   lifting — true while the user is dragging along the Y axis. A grounded object that gets lifted
@@ -377,6 +408,16 @@ export class World {
       } else g.position.y = ground + (o.offset || 0);   // slide along the terrain
     }
     o.pos = [g.position.x, g.position.y, g.position.z]; o.rot = g.rotation.y;
+    if (builtAtSize(o)) {
+      // the group is shown scaled as a preview during the drag; bake it into the data only when the drag ends
+      const f = [g.scale.x, g.scale.y, g.scale.z];
+      if (final && f.some(v => Math.abs(v - 1) > 1e-4)) { g.scale.set(1, 1, 1); this.applyScaleFactor(o, f); return; }
+      if (final) g.scale.set(1, 1, 1);
+      g.position.set(o.pos[0], o.pos[1], o.pos[2]); g.rotation.set(0, o.rot || 0, 0);
+      if (o.type === 'doorway' && o.target) this.dirty.add(o.target);
+      if (o.type === 'hollow') this.updateRoofClip(o);
+      return;
+    }
     if (o.scale && o.type !== 'path' && o.type !== 'light') o.scale = [Math.max(0.05, g.scale.x), Math.max(0.05, g.scale.y), Math.max(0.05, g.scale.z)];
     this.syncTransform(o);
     if (final && o.type === 'light' && o.grounded) this.rebuildObject(o.id);
@@ -390,9 +431,10 @@ export class World {
     const addMesh = (geo, mat) => { const m = new THREE.Mesh(geo, mat); m.castShadow = m.receiveShadow = true; g.add(m); return m; };
     switch (o.type) {
       case 'box': case 'wall': {
-        const geo = new THREE.BoxGeometry(1, 1, 1); geo.translate(0, 0.5, 0);
         const mat = o.type === 'wall' ? std({ map: TEX.concrete }) : std();
-        addMesh(geo, mat); break;
+        if (o.radius > 0) addMesh(boxGeometryAt(o.scale[0], o.scale[1], o.scale[2], o.radius), mat);   // built at size, see builtAtSize
+        else { const geo = new THREE.BoxGeometry(1, 1, 1); geo.translate(0, 0.5, 0); addMesh(geo, mat); }
+        break;
       }
       case 'ramp': {
         // wedge: rises along +z
@@ -416,8 +458,11 @@ export class World {
       case 'doorway': {
         const m = std({ metalness: 0.3, roughness: 0.6 }), pw = 0.07, lh = 0.08;
         const bar = (sx, sy, sz, x, y, z) => { const b = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), m); b.position.set(x, y, z); b.castShadow = true; g.add(b); };
-        bar(pw, 1, 1, -0.5 + pw / 2, 0.5, 0); bar(pw, 1, 1, 0.5 - pw / 2, 0.5, 0); bar(1, lh, 1, 0, 1 - lh / 2, 0);   // two posts + lintel, filling the edges of the hole
+        if (o.frame !== false) { bar(pw, 1, 1, -0.5 + pw / 2, 0.5, 0); bar(pw, 1, 1, 0.5 - pw / 2, 0.5, 0); bar(1, lh, 1, 0, 1 - lh / 2, 0); }   // two posts + lintel, filling the edges of the hole
         const hit = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({ visible: false })); hit.position.y = 0.5; g.add(hit);   // click target = the whole opening
+        // editor-only outline so a bare window cut can still be seen and selected
+        const outline = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), new THREE.LineBasicMaterial({ color: 0xffd25a, transparent: true, opacity: 0.6 }));
+        outline.position.y = 0.5; outline.userData.editorOnly = true; g.add(outline);
         break;
       }
       case 'sphere': { const geo = new THREE.SphereGeometry(0.5, 20, 14); geo.translate(0, 0.5, 0); addMesh(geo, std()); break; }
@@ -463,7 +508,7 @@ export class World {
     }
     g.position.set(o.pos[0], o.pos[1], o.pos[2]);
     g.rotation.y = o.rot || 0;
-    if (o.scale && o.type !== 'path' && o.type !== 'light') g.scale.set(o.scale[0], o.scale[1], o.scale[2]);
+    if (o.scale && o.type !== 'path' && o.type !== 'light' && !builtAtSize(o)) g.scale.set(o.scale[0], o.scale[1], o.scale[2]);
     this.group.add(g);
     this.meshes.set(o.id, g);
     if (o.type === 'hollow') this.updateRoofClip(o);

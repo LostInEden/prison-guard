@@ -39,7 +39,22 @@
   .val { color: var(--acc); font-size: 11px; float: right; }
   .note { color: var(--dim); font-size: 11px; line-height: 1.5; margin: 6px 0; }
 
-  #hint { position: fixed; left: 140px; right: 278px; bottom: 0; padding: 6px 12px; background: rgba(0,0,0,.55); color: var(--dim); font-size: 11px; z-index: 4; pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #hint { position: fixed; left: 140px; right: 278px; bottom: 0; padding: 8px 14px; background: rgba(0,0,0,.7); color: #d6d6d6; font-size: 13px; line-height: 1.4; z-index: 4; pointer-events: none; border-top: 1px solid var(--line); }
+  #hint b { color: var(--acc); }
+  #panel details { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 4px; }
+  #panel summary { cursor: pointer; font-size: 11px; letter-spacing: 3px; color: var(--acc); padding: 6px 0; list-style: none; }
+  #panel summary::before { content: '▸ '; color: var(--dim); }
+  #panel details[open] summary::before { content: '▾ '; }
+  #help { position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 20; display: none; align-items: center; justify-content: center; }
+  #help.show { display: flex; }
+  #helpBox { width: min(960px, 92vw); max-height: 90vh; overflow-y: auto; background: #0e1116; border: 1px solid var(--acc); padding: 18px 26px 26px; font-size: 13px; line-height: 1.6; }
+  #helpBox h2 { font-size: 14px; letter-spacing: 4px; color: var(--acc); margin: 0 0 10px; display: flex; justify-content: space-between; }
+  #helpBox h2 span { cursor: pointer; color: var(--dim); letter-spacing: 1px; font-size: 12px; }
+  #helpBox h3 { font-size: 11px; letter-spacing: 3px; color: var(--acc); margin: 14px 0 4px; }
+  #helpBox p { margin: 0; color: #d6d6d6; }
+  #helpBox b { color: #fff; background: rgba(255,255,255,.08); padding: 0 5px; border-radius: 3px; }
+  #helpBox .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 30px; }
+  @media (max-width: 760px) { #helpBox .cols { grid-template-columns: 1fr; } }
   #toast { position: fixed; left: 50%; top: 54px; transform: translateX(-50%); background: rgba(0,0,0,.7); border: 1px solid var(--line); padding: 6px 14px; opacity: 0; transition: opacity .2s; z-index: 6; pointer-events: none; }
 
   body.playing #topbar, body.playing #tools, body.playing #panel, body.playing #hint { display: none; }
@@ -78,23 +93,54 @@
   </div>
 
   <div id="tools">
-    <small>EDIT</small>
-    <button data-tool="select"><b>Q</b>Select</button>
-    <button data-tool="terrain"><b>T</b>Terrain</button>
-    <button data-tool="path"><b>H</b>Path</button>
-    <button data-tool="fence"><b>N</b>Fence</button>
-    <small>PLACE</small>
-    <button data-tool="box">Box</button>
-    <button data-tool="wall">Wall</button>
-    <button data-tool="ramp">Ramp</button>
-    <button data-tool="cylinder">Cylinder</button>
-    <button data-tool="sphere">Sphere</button>
-    <button data-tool="doorway"><b>O</b>Doorway</button>
-    <button data-tool="door">Door</button>
-    <button data-tool="light">Light</button>
-    <button data-tool="tree">Tree</button>
-    <button data-tool="treebrush">Tree brush</button>
-    <button data-tool="spawn"><b>S</b>Spawn</button>
+    <button data-tool="select" title="Click things to select them. Shift+click selects more than one."><b>Q</b>Select</button>
+    <small>SHAPES</small>
+    <button data-tool="box" title="A box. Click the ground or any surface to drop one. Tick Hollow to turn it into a room."><b>B</b>Box</button>
+    <button data-tool="cylinder" title="A cylinder. Tick Half for a rounded end.">Cylinder</button>
+    <button data-tool="sphere" title="A sphere.">Sphere</button>
+    <button data-tool="ramp" title="A wedge you can walk up.">Ramp</button>
+    <button data-tool="wall" title="A thin box, squared to the camera.">Wall</button>
+    <small>OPENINGS</small>
+    <button data-tool="doorway" title="Draw a rectangle on a wall to cut a door or window through it."><b>O</b>Opening</button>
+    <button data-tool="door" title="Click inside an opening to hang a door in it.">Door</button>
+    <button data-tool="light" title="A lamp on a pole (on the ground) or a bare bulb (on a surface).">Light</button>
+    <small>OUTSIDE</small>
+    <button data-tool="path" title="Click points to draw a road. Double-click to finish."><b>H</b>Path</button>
+    <button data-tool="fence" title="Click corner points to draw a fence. Double-click to finish."><b>N</b>Fence</button>
+    <button data-tool="tree" title="One tree.">Tree</button>
+    <button data-tool="treebrush" title="Drag to scatter trees.">Tree brush</button>
+    <button data-tool="terrain" title="Raise, lower, smooth, flatten or reset the ground."><b>T</b>Terrain</button>
+    <small>PLAY</small>
+    <button data-tool="spawn" title="Where the guard starts."><b>S</b>Spawn</button>
+    <button id="btnHelp" title="Controls cheat sheet (?)"><b>?</b>Help</button>
+  </div>
+
+  <div id="help">
+    <div id="helpBox">
+      <h2>WORLD EDITOR — HOW IT WORKS <span id="helpClose">✕ close (Esc)</span></h2>
+      <div class="cols">
+        <div>
+          <h3>Camera</h3>
+          <p><b>Right-drag</b> look around · <b>Middle-drag</b> pan · <b>Wheel</b> zoom · <b>W A S D</b> fly, <b>E / C</b> up / down, hold <b>Shift</b> to fly fast · <b>F</b> jump to the selected thing</p>
+          <h3>Placing shapes</h3>
+          <p>Pick a shape on the left, then <b>click</b> the ground or any surface. <b>R</b> / <b>Shift+R</b> turn the preview 15°, <b>,</b> / <b>.</b> turn it 90°. Hold <b>Shift</b> while clicking to snap to a 0.5 m grid. <b>Esc</b> goes back to Select.</p>
+          <h3>Editing a shape</h3>
+          <p>Click it. <b>1</b> move · <b>2</b> rotate · <b>3</b> resize, then drag the coloured handles (hold <b>Shift</b> to snap). The panel on the right has exact numbers: size, corner radius, colour. <b>PgUp / PgDn</b> lift or lower it, <b>End</b> sits it on the ground. <b>Ctrl+D</b> copies it, <b>Delete</b> removes it, <b>Ctrl+Z</b> undoes.</p>
+          <h3>Rooms (hollow)</h3>
+          <p>Select a shape and tick <b>Hollow</b> — it becomes a room with walls, floor and roof. To make one building out of several shapes, <b>Shift+click</b> them all and press <b>G</b>. Push shapes into each other so their insides join. <b>X</b> hides all roofs so you can build inside; a Wall dropped on a room's floor sizes itself floor-to-ceiling.</p>
+        </div>
+        <div>
+          <h3>Doors and windows</h3>
+          <p><b>Opening</b> tool: press on a wall, drag a rectangle, let go — it cuts straight through. Low on the wall you get a door frame; higher up a plain window hole. A single click makes a standard door-sized opening. Openings can be moved and resized afterwards (the hole follows) and deleted (the wall heals). <b>Door</b> tool: click inside an opening to hang a door; the side you click is the hinge side.</p>
+          <h3>Outside</h3>
+          <p><b>Path</b> and <b>Fence</b>: click points, double-click (or Enter) to finish, Esc to cancel. <b>Tree brush</b>: drag to scatter trees, <b>[</b> / <b>]</b> changes the brush size. <b>Terrain</b>: drag to raise / lower / smooth / flatten; <b>RESET</b> mode brings ground back to flat, and the panel has a button to reset all of it.</p>
+          <h3>Play</h3>
+          <p><b>P</b> or ▶ PLAY starts at the spawn marker. <b>W A S D</b> walk, <b>Shift</b> run, <b>F</b> interact, <b>L</b> torch, hold <b>right mouse</b> to aim the torch, <b>Esc</b> back to the editor.</p>
+          <h3>Saving</h3>
+          <p>Autosaves to this browser every 30 s. <b>SAVE</b> (Ctrl+S) saves now. <b>EXPORT</b> downloads a .json you can send to someone; <b>IMPORT</b> loads one. Your work is only on this computer until you EXPORT it.</p>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div id="panel"><div id="panelContent"></div></div>

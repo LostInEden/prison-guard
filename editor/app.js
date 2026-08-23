@@ -92,6 +92,8 @@ const brushRing = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 48), new THREE.M
 brushRing.rotation.x = -Math.PI / 2; brushRing.visible = false; brushRing.renderOrder = 10; scene.add(brushRing);
 const pathPreview = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd25a, depthTest: false })); pathPreview.renderOrder = 10; scene.add(pathPreview);
 const ghost = new THREE.Group(); scene.add(ghost);   // translucent preview of the thing about to be placed
+const cutGhost = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: 0xffd25a, transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthTest: false }));
+cutGhost.renderOrder = 11; cutGhost.visible = false; scene.add(cutGhost);   // the rectangle being drawn for an opening
 
 // map border + four edge handles you can drag to grow/shrink the terrain (the map stays centred on the origin)
 const mapEdge = new THREE.Group(); scene.add(mapEdge);
@@ -127,6 +129,8 @@ const ed = {
   pathPoints: [], down: false, flattenTarget: 0, lastBrushAt: null, undo: [], redo: [], mode: 'edit',
   placeRot: 0,   // extra yaw applied to the placement ghost (R / Shift+R / , / . while a place tool is active)
   edgeDrag: null,   // { ax, size } while a map-edge handle is being dragged
+  openDrag: null,   // { h, hit, n, u, rot, p0, p1 } while drawing an opening on a wall
+  worldOpen: false, editorOpen: false,   // collapsed state of the panel sections
 };
 let selected = null;
 const raycaster = new THREE.Raycaster();
@@ -243,12 +247,14 @@ canvas.addEventListener('pointerdown', (e) => {
     }
     default: {
       if (!isPlaceTool() || !hit) break;
+      if (ed.tool === 'doorway') { beginOpening(hit); break; }   // press-drag-release draws the opening; a click makes a standard door
       placeObject(ed.tool, hit, e);
     }
   }
 });
 canvas.addEventListener('pointermove', (e) => {
   if (ed.mode !== 'edit') return;
+  if (ed.openDrag) { updateOpening(e); return; }
   if (ed.edgeDrag) {
     // pull the edge: the map stays centred, so the new size is twice the cursor's distance from the middle
     pointerRay(e);
@@ -274,6 +280,7 @@ canvas.addEventListener('pointermove', (e) => {
 window.addEventListener('pointerup', () => {
   if (!ed.down) return;
   ed.down = false;
+  if (ed.openDrag) { finishOpening(); return; }
   if (ed.edgeDrag) {
     const size = ed.edgeDrag.size; ed.edgeDrag = null;
     if (size !== world.data.terrain.size) { pushUndo(); world.resizeTerrain(size); toast(`Map is now ${size} × ${size} m`); }
@@ -308,7 +315,52 @@ function placeObject(type, hit, e) {
   ed.tool = 'select'; setTool('select'); select(o);
   if (note) toast(note);
 }
-// Doorway tool: an opening through the wall that was clicked. A solid shape gets hollowed first.
+// ---- Opening tool: press on a wall, drag a rectangle, release. A solid shape gets hollowed first.
+function beginOpening(hit) {
+  let h = hit.object;
+  if (!h || !hit.normal) { toast('Press on the wall of a shape'); return; }
+  const n = hit.normal.clone(); n.y = 0;
+  if (n.lengthSq() < 0.15) { toast('Draw on the side of a wall, not on a roof or floor'); return; }   // lenient so rounded edges still count as wall
+  if (h.type !== 'hollow') {
+    if (!HOLLOW_TYPES.includes(h.type)) { toast('Openings go in boxes, cylinders, spheres or rooms'); return; }
+    pushUndo(); h = hollowObjects([h]); toast('Hollowed it out');
+  } else pushUndo();
+  n.normalize();
+  const rot = Math.atan2(n.x, n.z), u = new THREE.Vector3(n.z, 0, -n.x);   // u = along the wall (the opening's local +x)
+  ed.openDrag = { h, hit, n, u, rot, p0: hit.point.clone(), p1: hit.point.clone(), plane: new THREE.Plane().setFromNormalAndCoplanarPoint(n, hit.point) };
+  select(null);
+}
+function openingRect(d) {
+  const a = d.p1.clone().sub(d.p0).dot(d.u), dy = d.p1.y - d.p0.y;
+  return { width: Math.abs(a), height: Math.abs(dy), cx: d.p0.x + d.u.x * a / 2, cz: d.p0.z + d.u.z * a / 2, bottom: Math.min(d.p0.y, d.p1.y) };
+}
+function updateOpening(e) {
+  const d = ed.openDrag; pointerRay(e);
+  const p = new THREE.Vector3(); if (!raycaster.ray.intersectPlane(d.plane, p)) return;
+  d.p1.copy(p);
+  const r = openingRect(d);
+  cutGhost.visible = r.width > 0.05 && r.height > 0.05;
+  cutGhost.position.set(r.cx + d.n.x * 0.03, r.bottom + r.height / 2, r.cz + d.n.z * 0.03); cutGhost.rotation.set(0, d.rot, 0); cutGhost.scale.set(Math.max(0.01, r.width), Math.max(0.01, r.height), 1);
+  $('hint').innerHTML = `Opening <b>${r.width.toFixed(1)} × ${r.height.toFixed(1)} m</b> — let go to cut it`;
+}
+function finishOpening() {
+  const d = ed.openDrag; ed.openDrag = null; cutGhost.visible = false; updateHint();
+  const r = openingRect(d), h = d.h, t = h.thickness;
+  let o;
+  if (r.width < 0.3 || r.height < 0.3) o = placeDoorway({ ...d.hit, object: h });   // just a click: standard door-sized opening
+  else {
+    const inside = world.hollowInteriorAt(h, r.cx - d.n.x * t, r.cz - d.n.z * t) || world.hollowInteriorAt(h, r.cx, r.cz);
+    const floor = inside ? inside.floor : h.pos[1] + t;
+    let bottom = Math.max(r.bottom, floor), top = Math.min(r.bottom + r.height, inside ? inside.ceiling - 0.05 : Infinity);
+    const frame = bottom - floor < 0.35;   // drawn from the floor: a door; higher up: a window
+    if (frame) bottom = floor;
+    if (top - bottom < 0.3) { toast('Too small'); return; }
+    o = world.addObject({ type: 'doorway', pos: [r.cx - d.n.x * t / 2, bottom, r.cz - d.n.z * t / 2], rot: d.rot, scale: [r.width, top - bottom, t + 0.4], target: h.id, grounded: false, frame });
+    toast(frame ? 'Doorway cut' : 'Window cut');
+  }
+  if (o) { ed.tool = 'select'; setTool('select'); select(o); }
+}
+// a click with the Opening tool: a standard door-sized opening where you clicked
 function placeDoorway(hit) {
   let h = hit.object;
   if (!h || !hit.normal) { toast('Click the wall of a building'); return null; }
@@ -389,6 +441,8 @@ window.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (ed.mode === 'play') { onPlayKey(e); return; }
   if (e.key === 'Shift') setGizmoSnap(true);
+  if (e.key === '?') { showHelp(true); return; }
+  if (e.code === 'Escape' && $('help').classList.contains('show')) { showHelp(false); return; }
   if (e.ctrlKey || e.metaKey) {
     if (e.code === 'KeyZ') { e.preventDefault(); undo(); }
     if (e.code === 'KeyS') { e.preventDefault(); saveLocal(); }
@@ -416,6 +470,7 @@ window.addEventListener('keydown', (e) => {
     case 'KeyP': startPlay(false); break;
     case 'KeyG': if (selected) hollowSelection(); break;
     case 'KeyO': setTool('doorway'); break;
+    case 'KeyB': setTool('box'); break;
     case 'KeyX': world.setHideRoofs(!world.hideRoofs); renderPanel(); toast(world.hideRoofs ? 'Roofs hidden' : 'Roofs shown'); break;
     case 'BracketLeft': adjustBrush(-1); break;
     case 'BracketRight': adjustBrush(1); break;
@@ -449,7 +504,7 @@ function deleteSelected() {
 // ---- hollow: turn shapes into one shell you can walk into
 function hollowObjects(items) {
   const cx = items.reduce((a, o) => a + o.pos[0], 0) / items.length, cz = items.reduce((a, o) => a + o.pos[2], 0) / items.length, cy = Math.min(...items.map(o => o.pos[1]));
-  const parts = items.map(o => ({ type: o.type, pos: [o.pos[0] - cx, o.pos[1] - cy, o.pos[2] - cz], rot: o.rot || 0, scale: [...o.scale], half: !!o.half }));
+  const parts = items.map(o => ({ type: o.type, pos: [o.pos[0] - cx, o.pos[1] - cy, o.pos[2] - cz], rot: o.rot || 0, scale: [...o.scale], half: !!o.half, radius: o.radius || 0 }));
   for (const o of items) world.removeObject(o.id);
   return world.addObject({ type: 'hollow', pos: [cx, cy, cz], rot: 0, parts, cuts: [], color: items[0].color, name: items[0].name || '', grounded: items.length === 1 && items[0].grounded });
 }
@@ -479,7 +534,7 @@ function splitHollow(h) {
   const r = h.rot || 0, c = Math.cos(r), s = Math.sin(r);
   const toWorld = (p) => [h.pos[0] + p.pos[0] * c + p.pos[2] * s, h.pos[1] + p.pos[1], h.pos[2] - p.pos[0] * s + p.pos[2] * c];   // hollow local -> world
   const made = [];
-  for (const p of h.parts) made.push(world.addObject({ type: p.type, pos: toWorld(p), rot: (p.rot || 0) + r, scale: [...p.scale], half: !!p.half, color: h.color, grounded: false }));
+  for (const p of h.parts) made.push(world.addObject({ type: p.type, pos: toWorld(p), rot: (p.rot || 0) + r, scale: [...p.scale], half: !!p.half, radius: p.radius || 0, color: h.color, grounded: false }));
   for (const q of h.cuts || []) made.push(world.addObject({ type: 'box', pos: toWorld(q), rot: (q.rot || 0) + r, scale: [...q.scale], color: '#c0392b', grounded: false, solid: false, name: 'Opening cutter' }));
   world.removeObject(h.id);
   select(made[0]); for (const m of made.slice(1)) select(m, true);
@@ -570,11 +625,12 @@ function renderPanel() {
   if (ed.tool === 'terrain') {
     root.appendChild(el('h3', { text: 'TERRAIN BRUSH' }));
     const modes = el('div', { class: 'row2' });
-    for (const m of ['raise', 'lower', 'smooth', 'flatten']) modes.appendChild(el('button', { text: m.toUpperCase(), class: ed.brush.mode === m ? 'active' : '', onclick: () => { ed.brush.mode = m; renderPanel(); } }));
+    for (const m of ['raise', 'lower', 'smooth', 'flatten', 'reset']) modes.appendChild(el('button', { text: m.toUpperCase(), class: ed.brush.mode === m ? 'active' : '', onclick: () => { ed.brush.mode = m; renderPanel(); } }));
     root.appendChild(modes);
     root.appendChild(range('Radius', ed.brush.radius, 1, 60, 0.5, (v) => ed.brush.radius = v, (v) => v + ' m'));
     root.appendChild(range('Strength', ed.brush.strength, 0.05, 2, 0.05, (v) => ed.brush.strength = v));
-    root.appendChild(el('div', { class: 'note', text: 'Click-drag on the ground. [ ] changes radius. Flatten levels to the height where you started the stroke. Objects and paths re-snap to the new ground when you release.' }));
+    root.appendChild(el('div', { class: 'note', text: 'Drag on the ground. [ ] changes the brush size. FLATTEN levels to the height where you started the stroke; RESET brings the ground back to flat. Objects and paths re-snap when you release.' }));
+    root.appendChild(el('button', { style: 'width:100%;margin-top:6px', text: 'RESET ALL TERRAIN', onclick: () => { if (confirm('Flatten the whole map back to zero?')) { pushUndo(); world.resetTerrain(); updateMapEdge(); refreshSelectionBox(); toast('Terrain reset'); } } }));
   } else if (ed.tool === 'treebrush') {
     root.appendChild(el('h3', { text: 'TREE BRUSH' }));
     root.appendChild(range('Radius', ed.treeBrush.radius, 2, 40, 0.5, (v) => ed.treeBrush.radius = v, (v) => v + ' m'));
@@ -599,7 +655,7 @@ function renderPanel() {
   }
   // world settings
   const s = world.data.settings;
-  const sec = el('div', { class: 'sec' }, [el('h3', { text: 'WORLD' })]);
+  const sec = el('details', { ...(ed.worldOpen ? { open: '' } : {}), ontoggle: (e) => { ed.worldOpen = e.target.open; } }, [el('summary', { text: 'WORLD' })]);
   sec.appendChild(range('Time of day', s.time, 0, 1, 0.01, (v) => { s.time = v; applyTime(v); }, (v) => v < 0.15 ? 'night' : v < 0.5 ? 'dusk' : 'day'));
   sec.appendChild(range('Fog', s.fog, 0, 0.03, 0.0005, (v) => { s.fog = v; scene.fog.density = v; }, (v) => v.toFixed(4)));
   sec.appendChild(field('Hide roofs', el('input', { type: 'checkbox', ...(world.hideRoofs ? { checked: '' } : {}), onchange: (e) => { world.setHideRoofs(e.target.checked); } })));
@@ -617,7 +673,7 @@ function renderPanel() {
   }
   sec.appendChild(el('div', { class: 'note', text: 'Worlds autosave to this browser every 30 s. EXPORT downloads a .json you can keep or send; IMPORT loads one.' }));
   root.appendChild(sec);
-  const pref = el('div', { class: 'sec' }, [el('h3', { text: 'EDITOR' })]);
+  const pref = el('details', { ...(ed.editorOpen ? { open: '' } : {}), ontoggle: (e) => { ed.editorOpen = e.target.open; } }, [el('summary', { text: 'EDITOR' })]);
   pref.appendChild(range('Orbit sensitivity', prefs.orbitSpeed, 0.2, 3, 0.1, (v) => { prefs.orbitSpeed = v; applyPrefs(); }, (v) => v.toFixed(1) + '×'));
   pref.appendChild(range('Look sensitivity (play)', prefs.lookSpeed, 0.2, 3, 0.1, (v) => { prefs.lookSpeed = v; applyPrefs(); }, (v) => v.toFixed(1) + '×'));
   pref.appendChild(el('div', { class: 'note', text: 'Right-drag orbit speed in the editor, and mouse-look speed in play mode. Saved in this browser.' }));
@@ -679,6 +735,8 @@ function renderObjectPanel(root, o) {
     if (o.interact === 'note') root.appendChild(field('Message', el('input', { type: 'text', value: o.text || '', onchange: (e) => { o.text = e.target.value; } })));
     if (o.interact === 'pickup') root.appendChild(el('div', { class: 'note', text: 'Name above is what shows in the inventory; a door with the same Key name unlocks with it.' }));
   }
+  if (o.type === 'box' || o.type === 'wall') root.appendChild(field('Corner radius', numInput(o.radius || 0, (v) => { o.radius = Math.max(0, v); apply(true); }, 0.05)));
+  if (o.type === 'hollow' && o.parts.length === 1 && o.parts[0].type !== 'cylinder' && o.parts[0].type !== 'sphere') root.appendChild(field('Corner radius', numInput(o.parts[0].radius || 0, (v) => { o.parts[0].radius = Math.max(0, v); apply(true); }, 0.05)));
   if (o.type === 'cylinder') {
     root.appendChild(field('Half', el('input', { type: 'checkbox', ...(o.half ? { checked: '' } : {}), onchange: (e) => { o.half = e.target.checked; apply(true); } })));
     if (o.half) root.appendChild(el('div', { class: 'note', text: 'Half cylinder: the flat side sits on the object\'s origin and the curve bulges out the back. Size is that of the full cylinder it was cut from.' }));
@@ -691,6 +749,7 @@ function renderObjectPanel(root, o) {
     if (o.parts.length > 1) root.appendChild(el('button', { style: 'width:100%;margin-top:6px', text: 'SPLIT APART', onclick: () => splitHollow(o) }));
   }
   if (o.type === 'doorway') {
+    root.appendChild(field('Door frame', el('input', { type: 'checkbox', ...(o.frame !== false ? { checked: '' } : {}), onchange: (e) => { o.frame = e.target.checked; apply(true); } })));
     const t = world.getObject(o.target);
     root.appendChild(el('div', { class: 'note', text: t ? `Opening in "${t.name || 'hollow'}". Move, turn or resize it and the hole follows; delete it and the wall heals. Door tool: click inside the frame (left or right half picks the hinge side) to hang a door.` : 'Not linked to a building — it does nothing on its own.' }));
   }
@@ -732,17 +791,23 @@ function renderObjectPanel(root, o) {
 }
 function updateHint() {
   const h = {
-    select: 'Click to select · Shift+click multi-select · G hollow · End sit on ground · 1/2/3 move/rotate/scale · R , . rotate · PgUp/PgDn lift · Del · Ctrl+D duplicate · F frame · Ctrl+Z undo · P play',
-    terrain: 'Click-drag to sculpt · [ ] brush size · release to re-snap objects',
-    path: 'Click points · double-click / Enter to finish · Esc cancel',
-    fence: 'Click corner points · double-click / Enter to finish · Esc cancel',
-    treebrush: 'Click-drag to scatter trees · [ ] brush size',
-    spawn: 'Click the ground to place the spawn point',
-    doorway: 'Click the wall of a building (a solid box gets hollowed first) · Esc back to select',
-    door: 'Click inside a doorway to hang the door (left/right half = hinge side) · or anywhere to place a free door · R , . rotate',
-  }[ed.tool] || 'Click the ground or any object to place it there · Shift snaps to 0.5 m · R / Shift+R , . rotate the preview · Esc back to select';
-  $('hint').textContent = h + '  ·  drag a yellow edge handle to resize the map  ·  right-drag orbit · middle-drag pan · wheel zoom · WASD E/C fly';
+    select: '<b>Click</b> a shape to select it · <b>Shift+click</b> more · <b>1 / 2 / 3</b> move / rotate / resize · <b>G</b> hollow · <b>Del</b> remove · <b>Ctrl+Z</b> undo · <b>P</b> play',
+    terrain: '<b>Drag</b> on the ground to sculpt · <b>[ ]</b> brush size · RESET mode flattens back to zero',
+    path: '<b>Click</b> points for the road · <b>double-click</b> or <b>Enter</b> to finish · <b>Esc</b> cancel',
+    fence: '<b>Click</b> corner points · <b>double-click</b> or <b>Enter</b> to finish · <b>Esc</b> cancel',
+    treebrush: '<b>Drag</b> to scatter trees · <b>[ ]</b> brush size',
+    tree: '<b>Click</b> to plant one tree',
+    spawn: '<b>Click</b> the ground to set where the guard starts',
+    doorway: '<b>Press</b> on a wall, <b>drag</b> a rectangle, <b>let go</b> to cut it through · low = door, high = window · a plain click makes a door-sized opening',
+    door: '<b>Click</b> inside an opening to hang a door (the side you click is the hinge) · or click anywhere for a free door',
+    light: '<b>Click</b> the ground for a lamp post, or a wall / ceiling for a bare light',
+  }[ed.tool] || '<b>Click</b> the ground or any surface to drop it there · <b>R</b> / <b>, .</b> turn it first · <b>Shift</b> snaps to a grid · <b>Esc</b> back to Select';
+  $('hint').innerHTML = h + ' &nbsp;·&nbsp; <b>?</b> help &nbsp;·&nbsp; right-drag look · middle-drag pan · wheel zoom · WASD fly';
 }
+function showHelp(on) { $('help').classList.toggle('show', on); }
+$('btnHelp').addEventListener('click', () => showHelp(true));
+$('helpClose').addEventListener('click', () => showHelp(false));
+$('help').addEventListener('click', (e) => { if (e.target === $('help')) showHelp(false); });
 
 // =====================================================================
 //  PLAY MODE — the guard
@@ -780,6 +845,7 @@ function startPlay(here) {
   playCam.position.set(x, player.feet + player.height, z);
   ed.mode = 'play'; camera = playCam; workLight.visible = false;
   select(null); world.spawnMarker.visible = false; brushRing.visible = false; ghost.visible = false; pathPreview.visible = false; mapEdge.visible = false; orbit.enabled = false;
+  world.group.traverse(m => { if (m.userData.editorOnly) m.visible = false; });
   flashlight.intensity = flashOn ? 70 : 0;
   colliders = world.colliders();
   document.body.classList.add('playing');
@@ -791,6 +857,7 @@ function stopPlay() {
   ed.mode = 'edit'; camera = editCam; workLight.visible = true;
   document.body.classList.remove('playing'); $('clickToPlay').classList.remove('show');
   world.spawnMarker.visible = true; mapEdge.visible = true; orbit.enabled = true; flashlight.intensity = 0; aim.active = false;
+  world.group.traverse(m => { if (m.userData.editorOnly) m.visible = true; });
   setTool(ed.tool);
   // reset runtime state so the next play starts fresh
   for (const o of world.data.objects) { if (o.type === 'door') world.setDoor(o.id, false); }
