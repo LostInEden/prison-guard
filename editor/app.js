@@ -128,7 +128,7 @@ function hitEdgeHandle(e) { if (!mapEdge.visible) return null; pointerRay(e); ma
 const ed = {
   tool: 'select', selectedId: null, brush: { radius: 8, strength: 0.35, mode: 'raise' }, treeBrush: { radius: 8, density: 0.5 },
   pathPoints: [], down: false, flattenTarget: 0, lastBrushAt: null, undo: [], redo: [], mode: 'edit',
-  placeRot: 0,   // extra yaw applied to the placement ghost (R / Shift+R / , / . while a place tool is active)
+  placeRot: 0,   // extra yaw applied to the placement ghost (, / . = 15°, Shift+, / Shift+. = 90° while a place tool is active)
   edgeDrag: null,   // { ax, size } while a map-edge handle is being dragged
   openDrag: null,   // { h, hit, n, u, rot, p0, p1 } while drawing an opening on a wall
   worldOpen: false, editorOpen: false,   // collapsed state of the panel sections
@@ -452,7 +452,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   switch (e.code) {
-    case 'KeyQ': setTool('select'); break;
+    case 'KeyR': setTool('select'); break;
     case 'KeyT': setTool('terrain'); break;
     case 'KeyH': setTool('path'); break;
     case 'KeyN': setTool('fence'); break;
@@ -460,9 +460,8 @@ window.addEventListener('keydown', (e) => {
     case 'Digit1': setGizmoMode('translate'); break;
     case 'Digit2': setGizmoMode('rotate'); break;
     case 'Digit3': setGizmoMode('scale'); break;
-    case 'KeyR': rotateBy(e.shiftKey ? -15 : 15); break;
-    case 'Comma': rotateBy(-90); break;
-    case 'Period': rotateBy(90); break;
+    case 'Comma': rotateBy(e.shiftKey ? -90 : -15); break;
+    case 'Period': rotateBy(e.shiftKey ? 90 : 15); break;
     case 'PageUp': e.preventDefault(); liftBy(e.shiftKey ? 1 : 0.25); break;
     case 'PageDown': e.preventDefault(); liftBy(e.shiftKey ? -1 : -0.25); break;
     case 'Delete': case 'Backspace': if (selected) deleteSelected(); break;
@@ -556,7 +555,7 @@ function flyCamera(dt) {
   const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0));
   const mv = new THREE.Vector3();
   if (keys.KeyW) mv.add(fwd); if (keys.KeyS) mv.sub(fwd); if (keys.KeyD) mv.add(right); if (keys.KeyA) mv.sub(right);
-  if (keys.KeyE) mv.y += 1; if (keys.KeyC) mv.y -= 1;
+  if (keys.KeyE) mv.y += 1; if (keys.KeyQ || keys.KeyC) mv.y -= 1;
   if (mv.lengthSq() === 0) return;
   mv.normalize().multiplyScalar(sp);
   editCam.position.add(mv); orbit.target.add(mv);
@@ -787,7 +786,7 @@ function renderObjectPanel(root, o) {
       el('input', { type: 'checkbox', ...(o.grounded ? { checked: '' } : {}), onchange: (e) => { o.grounded = e.target.checked; apply(o.type === 'light'); } }),
       el('button', { text: 'SIT ON GROUND', title: 'End — sit on the highest ground under it', onclick: sitOnGround }),
     ])));
-    root.appendChild(el('div', { class: 'note', text: 'Drag the green gizmo arrow or press PgUp / PgDn (Shift = 1 m) to lift it into the air — that unticks snap. R / Shift+R rotate 15°, , and . rotate 90°. Hold Shift while dragging to snap.' }));
+    root.appendChild(el('div', { class: 'note', text: 'Drag the green gizmo arrow or press PgUp / PgDn (Shift = 1 m) to lift it into the air — that unticks snap. , and . rotate 15° (with Shift: 90°). Hold Shift while dragging to snap.' }));
   }
   if (o.color !== undefined) root.appendChild(field('Color', el('input', { type: 'color', value: o.color, oninput: (e) => { o.color = e.target.value; }, onchange: () => apply(true) })));
   if (o.solid !== undefined) root.appendChild(field('Solid', el('input', { type: 'checkbox', ...(o.solid ? { checked: '' } : {}), onchange: (e) => { o.solid = e.target.checked; pushUndo(); } })));
@@ -855,7 +854,7 @@ function renderObjectPanel(root, o) {
 }
 function updateHint() {
   const h = {
-    select: '<b>Click</b> a shape to select it · <b>Shift+click</b> more · <b>1 / 2 / 3</b> move / rotate / resize · <b>G</b> hollow · <b>Del</b> remove · <b>Ctrl+Z</b> undo · <b>P</b> play',
+    select: '<b>Click</b> a shape to select it · <b>Shift+click</b> more · <b>1 / 2 / 3</b> move / rotate / resize · <b>, .</b> turn · <b>G</b> hollow · <b>Del</b> remove · <b>Ctrl+Z</b> undo · <b>P</b> play',
     terrain: '<b>Drag</b> on the ground to sculpt · <b>[ ]</b> brush size · RESET mode flattens back to zero',
     path: '<b>Click</b> points for the road · <b>double-click</b> or <b>Enter</b> to finish · <b>Esc</b> cancel',
     fence: '<b>Click</b> corner points · <b>double-click</b> or <b>Enter</b> to finish · <b>Esc</b> cancel',
@@ -865,8 +864,8 @@ function updateHint() {
     doorway: '<b>Press</b> on a wall, <b>drag</b> a rectangle, <b>let go</b> to cut it through · low = door, high = window · a plain click makes a door-sized opening',
     door: '<b>Click</b> inside an opening to hang a door (the side you click is the hinge) · or click anywhere for a free door',
     light: '<b>Click</b> the ground for a lamp post, or a wall / ceiling for a bare light',
-  }[ed.tool] || '<b>Click</b> the ground or any surface to drop it there · <b>R</b> / <b>, .</b> turn it first · <b>Shift</b> snaps to a grid · <b>Esc</b> back to Select';
-  $('hint').innerHTML = h + ' &nbsp;·&nbsp; <b>?</b> help &nbsp;·&nbsp; right-drag look · middle-drag pan · wheel zoom · WASD fly';
+  }[ed.tool] || '<b>Click</b> the ground or any surface to drop it there · <b>, .</b> turn it first (<b>Shift</b> = 90°) · <b>Shift</b> snaps to a grid · <b>Esc</b> back to Select';
+  $('hint').innerHTML = h + ' &nbsp;·&nbsp; <b>?</b> help &nbsp;·&nbsp; right-drag look · middle-drag pan · wheel zoom · WASD fly, E up, Q down';
 }
 function showHelp(on) { $('help').classList.toggle('show', on); }
 $('btnHelp').addEventListener('click', () => showHelp(true));
