@@ -110,7 +110,7 @@
     <button data-tool="cylinder" title="A cylinder. Tick Half for a rounded end.">Cylinder</button>
     <button data-tool="sphere" title="A sphere.">Sphere</button>
     <button data-tool="ramp" title="A wedge you can walk up.">Ramp</button>
-    <button data-tool="wall" title="A thin box, squared to the camera.">Wall</button>
+    <button data-tool="wall" title="Press-drag-release to draw a wall from A to B. Inside a room it runs floor-to-ceiling.">Wall</button>
     <small>OPENINGS</small>
     <button data-tool="doorway" title="Draw a rectangle on a wall to cut a door or window through it."><b>O</b>Opening</button>
     <button data-tool="door" title="Click inside an opening to hang a door in it.">Door</button>
@@ -146,7 +146,7 @@
           <h3>Editing a shape</h3>
           <p>Click it. <b>1</b> move · <b>2</b> rotate · <b>3</b> resize, then drag the coloured handles (hold <b>Shift</b> to snap). The panel on the right has exact numbers: size, corner radius, colour. <b>PgUp / PgDn</b> lift or lower it, <b>End</b> sits it on the ground. <b>Ctrl+D</b> copies it, <b>Delete</b> removes it, <b>Ctrl+Z</b> undoes.</p>
           <h3>Rooms (hollow)</h3>
-          <p>Select a shape and tick <b>Hollow</b> — it becomes a room with walls, floor and roof. To make one building out of several shapes, <b>Shift+click</b> them all and press <b>G</b>. Push shapes into each other so their insides join. <b>X</b> hides all roofs so you can build inside; a Wall dropped on a room's floor sizes itself floor-to-ceiling.</p>
+          <p>Select a shape and tick <b>Hollow</b> — it becomes a room with walls, floor and roof. To make one building out of several shapes, <b>Shift+click</b> them all and press <b>G</b>. Push shapes into each other so their insides join. <b>X</b> hides all roofs so you can build inside. <b>Wall</b> tool inside a room: press, drag along the floor, release — a floor-to-ceiling wall from A to B (<b>Shift</b> snaps it straight). <b>Double-click</b> anywhere to orbit around that point.</p>
         </div>
         <div>
           <h3>Doors and windows</h3>
@@ -186,6 +186,6 @@
     }
   }
   </script>
-  <script type="module" src="./app.js?v=5"></script>
+  <script type="module" src="./app.js?v=6"></script>
 </body>
 </html>

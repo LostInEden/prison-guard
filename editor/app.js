@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, starterWorld, emptyWorld, uid } from './world.js?v=5';
-import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=5';
+import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, starterWorld, emptyWorld, uid } from './world.js?v=6';
+import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=6';
 
 const $ = (id) => document.getElementById(id);
 const clamp = THREE.MathUtils.clamp;
@@ -58,7 +58,7 @@ function applyTime(t) {   // 0 = midnight, 1 = noon
 //  WORLD + CAMERAS
 // =====================================================================
 const world = new World(scene);
-const editCam = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 2000);
+const editCam = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.05, 2000);
 editCam.position.set(18, 14, 22);
 const playCam = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.08, 1500);
 scene.add(playCam);
@@ -116,6 +116,9 @@ const brushRing = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 48), new THREE.M
 brushRing.rotation.x = -Math.PI / 2; brushRing.visible = false; brushRing.renderOrder = 10; scene.add(brushRing);
 const pathPreview = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd25a, depthTest: false })); pathPreview.renderOrder = 10; scene.add(pathPreview);
 const ghost = new THREE.Group(); scene.add(ghost);   // translucent preview of the thing about to be placed
+const wallGhostGeo = new THREE.BoxGeometry(1, 1, 1); wallGhostGeo.translate(0, 0.5, 0);
+const wallGhost = new THREE.Mesh(wallGhostGeo, new THREE.MeshBasicMaterial({ color: 0xffd25a, transparent: true, opacity: 0.35, depthTest: false }));
+wallGhost.renderOrder = 11; wallGhost.visible = false; scene.add(wallGhost);
 const cutGhost = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: 0xffd25a, transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthTest: false }));
 cutGhost.renderOrder = 11; cutGhost.visible = false; scene.add(cutGhost);   // the rectangle being drawn for an opening
 
@@ -154,6 +157,7 @@ const ed = {
   placeRot: 0,   // extra yaw applied to the placement ghost (R / Shift+R = 15°, , / . = 90° while a place tool is active)
   edgeDrag: null,   // { ax, size } while a map-edge handle is being dragged
   openDrag: null,   // { h, hit, n, u, rot, p0, p1 } while drawing an opening on a wall
+  wallDrag: null,   // { p0, p1, y, h, hollow } while drawing a wall along the floor
   worldOpen: false, editorOpen: false,   // collapsed state of the panel sections
 };
 let selected = null;
@@ -273,6 +277,7 @@ canvas.addEventListener('pointerdown', (e) => {
     default: {
       if (!isPlaceTool() || !hit) break;
       if (ed.tool === 'doorway') { beginOpening(hit); break; }   // press-drag-release draws the opening; a click makes a standard door
+      if (ed.tool === 'wall') { beginWallDraw(hit); break; }     // press-drag-release draws a wall along the floor
       placeObject(ed.tool, hit, e);
     }
   }
@@ -280,6 +285,7 @@ canvas.addEventListener('pointerdown', (e) => {
 canvas.addEventListener('pointermove', (e) => {
   if (ed.mode !== 'edit') return;
   if (ed.openDrag) { updateOpening(e); return; }
+  if (ed.wallDrag) { updateWallDraw(e); return; }
   if (ed.edgeDrag) {
     // pull the edge: the map stays centred, so the new size is twice the cursor's distance from the middle
     pointerRay(e);
@@ -306,6 +312,7 @@ window.addEventListener('pointerup', () => {
   if (!ed.down) return;
   ed.down = false;
   if (ed.openDrag) { finishOpening(); return; }
+  if (ed.wallDrag) { finishWallDraw(); return; }
   if (ed.edgeDrag) {
     const size = ed.edgeDrag.size; ed.edgeDrag = null;
     if (size !== world.data.terrain.size) { pushUndo(); world.resizeTerrain(size); toast(`Map is now ${size} × ${size} m`); }
@@ -315,7 +322,12 @@ window.addEventListener('pointerup', () => {
   if (ed.mode === 'edit' && (ed.tool === 'terrain')) { world.groundAll(); refreshSelectionBox(); updateMapEdge(); pushUndo(); }
   if (ed.mode === 'edit' && ed.tool === 'treebrush') pushUndo();
 });
-canvas.addEventListener('dblclick', () => { if (ed.mode === 'edit' && LINE_TYPES.includes(ed.tool)) finishPath(); });
+canvas.addEventListener('dblclick', (e) => {
+  if (ed.mode !== 'edit') return;
+  if (LINE_TYPES.includes(ed.tool)) { finishPath(); return; }
+  const hit = hitWorld(e, true);
+  if (hit) { orbit.target.copy(hit.point); fl.dist = Math.max(1, editCam.position.distanceTo(hit.point)); toast('Orbiting around here'); }
+});
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 const isPlaceTool = () => ['box', 'wall', 'ramp', 'cylinder', 'sphere', 'doorway', 'door', 'light', 'tree'].includes(ed.tool);
@@ -339,6 +351,49 @@ function placeObject(type, hit, e) {
   if (o.grounded) { o.pos[1] = world.groundY(o) + (o.offset || 0); world.syncTransform(o); }
   ed.tool = 'select'; setTool('select'); select(o);
   if (note) toast(note);
+}
+// ---- Wall tool: press where the wall starts, drag along the floor, release where it ends.
+// Inside a room it sits on the floor and runs floor-to-ceiling. A short drag counts as a click (standard wall).
+function beginWallDraw(hit) {
+  let y = hit.point.y, h = DEFAULTS.wall.scale[1], hollow = null, grounded = !!hit.terrain;
+  if (hit.object?.type === 'hollow' && hit.normal?.y > 0.7) {
+    const inside = world.hollowInteriorAt(hit.object, hit.point.x, hit.point.z);
+    if (inside) { y = inside.floor; h = Math.max(0.5, inside.ceiling - inside.floor); hollow = hit.object; grounded = false; }
+  }
+  ed.wallDrag = { p0: hit.point.clone().setY(y), p1: hit.point.clone().setY(y), y, h, hollow, grounded, plane: new THREE.Plane(new THREE.Vector3(0, 1, 0), -y) };
+  select(null);
+}
+function wallDrawDims(d, snap) {
+  let x0 = d.p0.x, z0 = d.p0.z, x1 = d.p1.x, z1 = d.p1.z;
+  if (snap) { x0 = Math.round(x0 * 2) / 2; z0 = Math.round(z0 * 2) / 2; x1 = Math.round(x1 * 2) / 2; z1 = Math.round(z1 * 2) / 2; }
+  let len = Math.hypot(x1 - x0, z1 - z0), rot = Math.atan2(-(z1 - z0), x1 - x0);
+  if (snap && len > 0.01) { const step = Math.PI / 12; rot = Math.round(rot / step) * step; x1 = x0 + Math.cos(rot) * len; z1 = z0 - Math.sin(rot) * len; }
+  return { len, rot, cx: (x0 + x1) / 2, cz: (z0 + z1) / 2 };
+}
+function updateWallDraw(e) {
+  const d = ed.wallDrag; pointerRay(e);
+  const p = new THREE.Vector3(); if (!raycaster.ray.intersectPlane(d.plane, p)) return;
+  d.p1.copy(p).setY(d.y);
+  const r = wallDrawDims(d, e.shiftKey); d.snapped = e.shiftKey;
+  wallGhost.visible = r.len > 0.05;
+  wallGhost.position.set(r.cx, d.y, r.cz); wallGhost.rotation.set(0, r.rot, 0); wallGhost.scale.set(Math.max(0.01, r.len), d.h, DEFAULTS.wall.scale[2]);
+  $('hint').innerHTML = `Wall <b>${r.len.toFixed(1)} m</b> long, <b>${d.h.toFixed(1)} m</b> high — let go to build it` + (d.snapped ? '' : ' · hold <b>Shift</b> to snap');
+}
+function finishWallDraw() {
+  const d = ed.wallDrag; ed.wallDrag = null; wallGhost.visible = false; updateHint();
+  const r = wallDrawDims(d, d.snapped);
+  pushUndo();
+  let o;
+  if (r.len < 0.4) {
+    const def = { type: 'wall', pos: [d.p0.x, d.y, d.p0.z], rot: placeRot(), grounded: d.grounded };
+    if (d.hollow) def.scale = [DEFAULTS.wall.scale[0], d.h, DEFAULTS.wall.scale[2]];
+    o = world.addObject(def);
+    if (o.grounded) { o.pos[1] = world.groundY(o) + (o.offset || 0); world.syncTransform(o); }
+  } else {
+    o = world.addObject({ type: 'wall', pos: [r.cx, d.y, r.cz], rot: r.rot, scale: [r.len, d.h, DEFAULTS.wall.scale[2]], grounded: d.grounded });
+    toast(`Wall ${r.len.toFixed(1)} m`);
+  }
+  ed.tool = 'select'; setTool('select'); select(o);
 }
 // ---- Opening tool: press on a wall, drag a rectangle, release. A solid shape gets hollowed first.
 function beginOpening(hit) {
@@ -901,6 +956,7 @@ function updateHint() {
     tree: '<b>Click</b> to plant one tree',
     spawn: '<b>Click</b> the ground to set where the guard starts',
     doorway: '<b>Press</b> on a wall, <b>drag</b> a rectangle, <b>let go</b> to cut it through · low = door, high = window · a plain click makes a door-sized opening',
+    wall: '<b>Press</b> where the wall starts, <b>drag</b>, <b>let go</b> where it ends · inside a room it runs floor-to-ceiling · <b>Shift</b> snaps straight · a click drops a standard wall',
     door: '<b>Click</b> inside an opening to hang a door (the side you click is the hinge) · or click anywhere for a free door',
     light: '<b>Click</b> the ground for a lamp post, or a wall / ceiling for a bare light',
   }[ed.tool] || '<b>Click</b> the ground or any surface to drop it there · <b>R</b> turns it 15°, <b>, .</b> 90° · <b>Shift</b> snaps to a grid · <b>Esc</b> back to Select';
