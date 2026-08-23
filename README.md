@@ -55,7 +55,7 @@ Everything lives in `main.js`:
 
 Open http://localhost:8765/editor/ (same static server). It is a **space builder**: drop basic shapes into a 3D world, shape them, hollow them into rooms, cut doors and windows by drawing on walls, then walk through it. Press **?** in the editor for the full cheat sheet — it's written for someone seeing the tool for the first time.
 
-- **Camera**: right-drag look · middle-drag pan · wheel zoom · WASD fly, E up, Q down (Shift = fast) · F jumps to the selection. Orbit / look sensitivity sliders live in the EDITOR fold of the right panel (saved per browser).
+- **Camera**: right-drag look (or **Tab** free look — move the pointer to look, no button; great on trackpads) · middle-drag pan · wheel zoom · WASD fly, E up, Q down (Shift = fast) · F jumps to the selection. Orbit / look sensitivity sliders live in the EDITOR fold of the right panel (saved per browser).
 - **Left bar** — *Shapes*: Box (B) · Cylinder · Sphere · Ramp · Wall. *Openings*: Opening (O) · Door · Light. *Outside*: Path (H) · Fence (N) · Tree · Tree brush · Terrain (T). *Play*: Spawn (S). Select is C. Every button has a tooltip.
 - **Placing**: pick a shape, click the ground or any surface (stacking on other shapes works). R / Shift+R turn the preview 15°, `,` / `.` 90°. Shift+click snaps to a 0.5 m grid. Esc back to Select.
 - **Shaping**: click a shape; 1 move / 2 rotate / 3 resize gizmos (Shift snaps). The panel has exact size, rotation, colour and a **Corner radius** for boxes (rounded cubes — the rounding stays true when you resize). PgUp / PgDn lift, End sits it on the ground (highest point under its footprint — nothing sinks), Ctrl+D copies, Delete removes, Ctrl+Z undoes. Shift+click selects several; G hollows them as one.

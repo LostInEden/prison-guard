@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, starterWorld, emptyWorld, uid } from './world.js?v=4';
-import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=4';
+import { World, DEFAULTS, TYPE_LABELS, HOLLOW_TYPES, LINE_TYPES, starterWorld, emptyWorld, uid } from './world.js?v=5';
+import { listWorlds, worldVersions, loadWorld as cloudLoad, saveWorld as cloudSave, checkRoom, timeAgo } from './cloud.js?v=5';
 
 const $ = (id) => document.getElementById(id);
 const clamp = THREE.MathUtils.clamp;
@@ -73,6 +73,29 @@ orbit.target.set(0, 0, 0);
 const prefs = Object.assign({ orbitSpeed: 1, lookSpeed: 1, author: '', room: '' }, JSON.parse(localStorage.getItem('ns-editor-prefs') || '{}'));
 function applyPrefs() { orbit.rotateSpeed = prefs.orbitSpeed; orbit.panSpeed = Math.max(0.5, prefs.orbitSpeed); localStorage.setItem('ns-editor-prefs', JSON.stringify(prefs)); }
 applyPrefs();
+
+// ---- free look (Tab): laptop-friendly — the pointer locks and moving the finger looks around, no button held.
+const fl = { on: false, yaw: 0, pitch: 0, dist: 12 };
+function enterFreeLook() {
+  if (ed.mode !== 'edit') return;
+  const e = new THREE.Euler().setFromQuaternion(editCam.quaternion, 'YXZ');
+  fl.yaw = e.y; fl.pitch = e.x; fl.dist = Math.max(2, editCam.position.distanceTo(orbit.target));
+  renderer.domElement.requestPointerLock();
+}
+document.addEventListener('pointerlockchange', () => {
+  if (ed.mode !== 'edit') return;
+  fl.on = document.pointerLockElement === renderer.domElement;
+  orbit.enabled = !fl.on;
+  toast(fl.on ? 'Free look — move to look around, WASD to fly, Tab or click to exit' : 'Free look off');
+});
+document.addEventListener('mousemove', (e) => {
+  if (!fl.on || ed.mode !== 'edit') return;
+  fl.yaw -= (e.movementX || 0) * 0.0022 * prefs.lookSpeed;
+  fl.pitch = clamp(fl.pitch - (e.movementY || 0) * 0.0022 * prefs.lookSpeed, -1.5, 1.5);
+  editCam.quaternion.setFromEuler(new THREE.Euler(fl.pitch, fl.yaw, 0, 'YXZ'));
+  const fwd = new THREE.Vector3(); editCam.getWorldDirection(fwd);
+  orbit.target.copy(editCam.position).addScaledVector(fwd, fl.dist);   // so the orbit picks up smoothly where free look ends
+});
 
 const gizmo = new TransformControls(editCam, renderer.domElement);
 gizmo.setSize(0.8);
@@ -212,6 +235,7 @@ const placeRot = () => placeBaseRot() + ed.placeRot;
 // =====================================================================
 const canvas = renderer.domElement;
 canvas.addEventListener('pointerdown', (e) => {
+  if (fl.on) { document.exitPointerLock(); return; }   // any click leaves free look
   if (ed.mode !== 'edit' || e.button !== 0) return;
   if (gizmo.axis) return;                       // clicking the gizmo
   const handle = hitEdgeHandle(e);              // map-edge handles win over everything (any tool)
@@ -470,6 +494,7 @@ window.addEventListener('keydown', (e) => {
     case 'Enter': if (LINE_TYPES.includes(ed.tool)) finishPath(); break;
     case 'KeyF': if (selected) focusOn(world.meshes.get(selected.id).position); break;
     case 'KeyP': startPlay(false); break;
+    case 'Tab': e.preventDefault(); if (fl.on) document.exitPointerLock(); else enterFreeLook(); break;
     case 'KeyG': if (selected) hollowSelection(); break;
     case 'KeyO': setTool('doorway'); break;
     case 'KeyB': setTool('box'); break;
@@ -879,7 +904,7 @@ function updateHint() {
     door: '<b>Click</b> inside an opening to hang a door (the side you click is the hinge) · or click anywhere for a free door',
     light: '<b>Click</b> the ground for a lamp post, or a wall / ceiling for a bare light',
   }[ed.tool] || '<b>Click</b> the ground or any surface to drop it there · <b>R</b> turns it 15°, <b>, .</b> 90° · <b>Shift</b> snaps to a grid · <b>Esc</b> back to Select';
-  $('hint').innerHTML = h + ' &nbsp;·&nbsp; <b>?</b> help &nbsp;·&nbsp; right-drag look · middle-drag pan · wheel zoom · WASD fly, E up, Q down';
+  $('hint').innerHTML = h + ' &nbsp;·&nbsp; <b>?</b> help &nbsp;·&nbsp; right-drag or <b>Tab</b> look · middle-drag pan · wheel zoom · WASD fly, E up, Q down';
 }
 function showHelp(on) { $('help').classList.toggle('show', on); }
 $('btnHelp').addEventListener('click', () => showHelp(true));
@@ -1043,7 +1068,7 @@ window.addEventListener('resize', () => {
   for (const c of [editCam, playCam]) { c.aspect = innerWidth / innerHeight; c.updateProjectionMatrix(); }
   renderer.setSize(innerWidth, innerHeight);
 });
-window.__editor = { world, ed, select, setTool, startPlay, stopPlay, player, playCam, editCam, orbit, plc, gizmo, frame: () => frame(), pushUndo, undo, loadWorld, starterWorld };
+window.__editor = { world, ed, select, setTool, startPlay, stopPlay, player, playCam, editCam, orbit, plc, gizmo, fl, emptyWorld, frame: () => frame(), pushUndo, undo, loadWorld, starterWorld };
 
 const clock = new THREE.Clock();
 function animate() { requestAnimationFrame(animate); frame(); }
@@ -1059,7 +1084,7 @@ function frame() {
     if (msgTimer > 0) { msgTimer -= dt; if (msgTimer <= 0) $('message').style.opacity = 0; }
   } else {
     flyCamera(dt);
-    orbit.update();
+    if (!fl.on) orbit.update();
     sky.position.set(editCam.position.x, 0, editCam.position.z);
     if (selected) refreshSelectionBox();
   }
