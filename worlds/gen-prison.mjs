@@ -45,10 +45,10 @@ const ellipse = (cx, cz, rx, rz, k = 28) => Array.from({ length: k + 1 }, (_, i)
 
 // ---------------------------------------------------------------- 1–3  perimeter wall, towers, inner fence
 const W = [[-154, -49], [-44, -130], [29, -189], [151, -191], [181, -130], [187, 73], [182, 143], [-118, 136], [-181, 77]];
-// the south run (W6 -> W7) is split so the gatehouse (x -29..11) sits in the gap instead of having the wall run through it
+// the south run (W6 -> W7) is split so the intake building (x -17.5..13.5) sits in the gap instead of having the wall run through it
 const onSouth = (x) => [x, W[6][1] + (W[7][1] - W[6][1]) * ((W[6][0] - x) / (W[6][0] - W[7][0]))];
 for (let i = 0; i < W.length; i++) {
-  if (i === 6) { wallSeg(W[6], onSouth(12)); wallSeg(onSouth(-30), W[7]); }
+  if (i === 6) { wallSeg(W[6], onSouth(13.5)); wallSeg(onSouth(-17.5), W[7]); }   // gap = the intake building
   else wallSeg(W[i], W[(i + 1) % W.length]);
 }
 for (const [x, z] of W) {
@@ -62,7 +62,17 @@ const inner = W.map(([x, z]) => [Math.round((x - 10) * 0.955 + 10), Math.round((
 fence('Inner fence', [[14, 134], inner[6], inner[5], inner[4], inner[3], inner[2], inner[1], inner[0], inner[8], inner[7], [-32, 133]]);
 
 // ---------------------------------------------------------------- 4–6  gates and roads
-const gatehouse = hollow('Gatehouse', -9, 139, 40, 7, 18, 0, '#8a8d88'); doorway(gatehouse, 'n', 0.45, 6, 4.5); doorway(gatehouse, 's', 0.45, 6, 4.5);
+// Intake (mirrors the web prototype's entry wing): man trap -> hallway through the gatehouse, security room on the
+// left and an office on the right -> covered corridor -> inner gate. HX is the hallway centre line; the inner gate's
+// doorways sit at x = -0.5 so everything lines up on one axis.
+const HX = -0.5, HW = 4.4;
+const mantrap = hollow('Man trap', HX, 150, 5, 3.2, 4, 0, '#6c7075'); doorway(mantrap, 's', 0, 2.4, 2.6); doorway(mantrap, 'n', 0, 2.4, 2.6);
+const hallway = hollow('Intake hallway', HX, 139, HW, 3.5, 18, 0, '#8a8d88'); doorway(hallway, 's', 0, 2.4, 2.6); doorway(hallway, 'n', 0, 2.4, 2.6);
+doorway(hallway, 'w', 0); doorway(hallway, 'e', 0);                                     // into the security room / office
+const security = hollow('Security room', HX - HW / 2 - T - 7, 139, 14, 3.5, 8, 0, '#8a8d88'); doorway(security, 'e', 0);
+const office = hollow('Intake office', HX + HW / 2 + T + 6, 139, 12, 3.5, 8, 0, '#8a8d88'); doorway(office, 'w', 0);
+const corridor = hollow('Intake corridor', HX, 115, HW, 3.5, 30, 0, '#8a8d88'); doorway(corridor, 's', 0, 2.4, 2.6); doorway(corridor, 'n', 0, 2.4, 2.6);
+for (const [x, z] of [[HX, 107], [HX, 115], [HX, 123], [HX, 139], [HX - HW / 2 - T - 7, 139], [HX + HW / 2 + T + 6, 139]]) light(x, z, 3, { color: '#eef3ff', intensity: 12, distance: 14, group: 'intake', grounded: false });   // ceiling fittings, no pole
 const innerGate = hollow('Inner gate', -2, 92, 16, 6, 17, 0, '#8a8d88'); doorway(innerGate, 'n', 0.25, 6, 4.2); doorway(innerGate, 's', 0.25, 6, 4.2);
 path('Spine road', [[0, 160], [0, -65]], 6);
 path('Entrance road', [[0, 160], [0, 185]], 8);
@@ -154,7 +164,7 @@ const world = {
   version: 1, name: 'Prison',
   terrain: { size: SIZE, seg: SEG, heights },
   objects,
-  spawn: { pos: [0, 0, 120], yaw: 0 },                // on the spine just inside the gatehouse, facing north (-z)
+  spawn: { pos: [HX, 0, 150], yaw: 0 },               // in the man trap, facing north (-z) at the door into the hallway
   settings: { time: 0.08, fog: 0.004, groundMode: 'highest' },
 };
 const out = join(dirname(fileURLToPath(import.meta.url)), 'prison.json');
